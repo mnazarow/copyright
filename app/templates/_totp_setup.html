@@ -1,0 +1,17 @@
+<div class="totp-setup">
+  <div id="totp-qr" class="qr" data-uri="{{ uri }}"></div>
+  <p class="small muted">Не сканируется? Добавьте вручную: ключ <code class="secret">{{ secret }}</code>, тип — по времени, 6 цифр, 30 секунд.</p>
+</div>
+{% if error %}<div class="notice warn">Код не подошел. Введите текущий код из приложения; время на телефоне должно устанавливаться автоматически.</div>{% endif %}
+<form method="post" action="{{ action }}">
+  <input type="hidden" name="next" value="{{ next }}">
+  <label class="f">Код из приложения</label>
+  <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" autofocus>
+  <p><button class="btn" type="submit">Подключить</button></p>
+</form>
+<script src="/static/vendor/qrcode.js"></script>
+<script>(function () {
+  const el = document.getElementById('totp-qr'); if (!el || !window.qrcode) return;
+  const q = qrcode(0, 'M'); q.addData(el.dataset.uri); q.make();
+  el.innerHTML = q.createSvgTag({cellSize: 5, margin: 3, scalable: true});
+})();</script>

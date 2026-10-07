@@ -45,13 +45,95 @@ TYPO_RX = [
     ("запись «м вод. ст.»", r"м\.\s?вод|вод\.ст"),
 ]
 STD = re.compile(r"(ГОСТ|СП|СНиП|ТУ|ФЗ|ISO|IEC|МЭК|EN|DIN|№|ТР)\s*[\w.]*$")
+
+
+def merge_baseline(bl):
+    """Склейка кусков одной строки. PDF из Word/LibreOffice при подмене шрифта дробит строку на части
+    («Диапазон давления» / « 10-20 » / «бар» / «.»), и PyMuPDF отдает их отдельными строками в порядке шрифтов.
+    Части с общей базовой линией, стоящие рядом (зазор меньше кегля), собираются в одну строку слева направо."""
+    if len(bl) < 2:
+        return bl
+    rows = []
+    for ln in bl:
+        size = max([s.get("size", 10) for s in ln["spans"]] or [10])
+        for r in rows:
+            ry0, ry1 = r["bbox"][1], r["bbox"][3]
+            ov = min(ry1, ln["bbox"][3]) - max(ry0, ln["bbox"][1])
+            if ov > 0.6 * min(ry1 - ry0, ln["bbox"][3] - ln["bbox"][1]) and abs(r["bbox"][3] - ln["bbox"][3]) < 0.4 * size:
+                r["parts"].append(ln)
+                r["bbox"] = (min(r["bbox"][0], ln["bbox"][0]), min(ry0, ln["bbox"][1]),
+                             max(r["bbox"][2], ln["bbox"][2]), max(ry1, ln["bbox"][3]))
+                break
+        else:
+            rows.append({"parts": [ln], "bbox": tuple(ln["bbox"])})
+    if all(len(r["parts"]) == 1 for r in rows):
+        return bl                                      # обычный PDF: порядок и строки без изменений
+    out = []
+    for r in rows:
+        parts = sorted(r["parts"], key=lambda l: l["bbox"][0])
+        size = max(s.get("size", 10) for p in parts for s in p["spans"]) if parts[0]["spans"] else 10
+        chunks, right = [parts[0]], parts[0]["bbox"][2]
+        for p in parts[1:]:
+            if p["bbox"][0] - right > 0.15 * size:    # не вплотную: другая колонка или ячейка, не склеиваем
+                out.append(_join(chunks)); chunks = [p]; right = p["bbox"][2]
+            else:
+                chunks.append(p); right = max(right, p["bbox"][2])
+        out.append(_join(chunks))
+    order = {id(l): i for i, l in enumerate(bl)}
+    out.sort(key=lambda l: min([order.get(id(p), 10 ** 6) for p in l.get("_src", [l])]))
+    return [{k: v for k, v in l.items() if k != "_src"} for l in out]
+
+
+def _join(parts):
+    """Строка из частей по символам: сортировка по x, пробел-заглушка под чужим символом удаляется."""
+    if len(parts) == 1:
+        return parts[0]
+    src = parts
+    chars = []
+    for p in parts:
+        for sp in p["spans"]:
+            for c in sp.get("chars", []):
+                chars.append((c["bbox"][0], c["bbox"][2], c["c"], sp.get("size", 10)))
+    if not chars:                                      # нет посимвольных данных — простое соединение
+        txt = "".join(s["text"] for p in parts for s in p["spans"])
+        chars_txt = txt
+    else:
+        chars.sort(key=lambda c: c[0])
+        solid = [c for c in chars if not c[2].isspace()]
+        keep = []
+        for c in chars:
+            if c[2].isspace() and any(o[0] < c[1] - 0.3 and o[1] > c[0] + 0.3 for o in solid):
+                continue
+            if c[2].isspace() and keep and keep[-1][2].isspace() and c[0] < keep[-1][1] + 0.5:
+                continue                               # два пробела-заглушки в одном месте
+            w = max(0.1, c[1] - c[0])
+            if any(k[2] == c[2] and min(k[1], c[1]) - max(k[0], c[0]) > 0.5 * w for k in keep[-4:]):
+                continue                               # тот же символ поверх (имитация жирного, тень)
+            keep.append(c)
+        out, prev = [], None
+        for c in keep:
+            if prev is not None and not c[2].isspace() and not prev[2].isspace() and c[0] - prev[1] > 0.25 * c[3]:
+                out.append(" ")
+            out.append(c[2])
+            prev = c
+        chars_txt = "".join(out)
+    x0 = min(p["bbox"][0] for p in parts); x1 = max(p["bbox"][2] for p in parts)
+    y0 = min(p["bbox"][1] for p in parts); y1 = max(p["bbox"][3] for p in parts)
+    size = max([s.get("size", 10) for p in parts for s in p["spans"]] or [10])
+    return {"bbox": (x0, y0, x1, y1), "spans": [{"text": chars_txt, "size": size}], "_src": src}
+
+
 for pno, page in enumerate(doc, 1):
     h, w = page.rect.height, page.rect.width
-    d = page.get_text("dict")
+    d = page.get_text("rawdict")
+    for _b in d["blocks"]:                             # rawdict: текст span собирается из символов
+        for _l in _b.get("lines", []):
+            for _s in _l["spans"]:
+                _s["text"] = "".join(c["c"] for c in _s.get("chars", []))
     head, foot, lines = [], [], []
     for bi, b in enumerate(d["blocks"]):
         if b.get("type", 0) != 0: continue
-        bl = b.get("lines", [])
+        bl = merge_baseline(b.get("lines", []))
         for li, ln in enumerate(bl):
             x0, y0, x1, y1 = ln["bbox"]
             txt = "".join(s["text"] for s in ln["spans"]).rstrip()

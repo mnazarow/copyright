@@ -10,10 +10,13 @@
     <div class="dl">
       <a class="btn ghost small" href="/job/{{ job.id }}/file/source">Исходный PDF</a>
       {% if job.status == 'done' %}<a class="btn ghost small" href="/analytics?job={{ job.id }}" title="Графики и показатели этого документа">Аналитика</a>{% endif %}
+      {% if job.status == 'done' %}<a class="btn ghost small" href="/compare?job={{ job.id }}" title="Что исправлено по сравнению с другой версией">Сравнить версии</a>{% endif %}
+{% if can('review') or job.owner == user.login %}
       <form method="post" action="/job/{{ job.id }}/restart" onsubmit="return confirm('Проверить документ заново с текущими настройками? Ручные отметки будут потеряны.')">
         <button class="btn ghost small">Проверить заново</button></form>
       <form method="post" action="/job/{{ job.id }}/delete" onsubmit="return confirm('Удалить задание и все его файлы?')">
         <button class="btn danger small">Удалить</button></form>
+      {% endif %}
     </div>
   </div>
 
@@ -45,6 +48,7 @@
       {% set files = v.files or {} %}
       {% if files.docx %}<a class="btn" href="/job/{{ job.id }}/file/docx">Отчет DOCX</a>{% endif %}
       {% if files.pdf_annot %}<a class="btn ghost" href="/job/{{ job.id }}/file/pdf_annot">PDF с пометками</a>{% endif %}
+      {% if files.docx_review %}<a class="btn ghost" href="/job/{{ job.id }}/file/docx_review" title="Копия вашего документа Word с примечаниями и исправлениями в режиме рецензирования">Правки в Word</a>{% endif %}
       {% if files.xlsx %}<a class="btn ghost" href="/job/{{ job.id }}/file/xlsx">XLSX</a>{% endif %}
       {% if files.csv %}<a class="btn ghost" href="/job/{{ job.id }}/file/csv">CSV</a>{% endif %}
       {% if files.json %}<a class="btn ghost" href="/job/{{ job.id }}/file/json">findings.json</a>{% endif %}
@@ -69,6 +73,36 @@
   </div>
   {% endif %}
 
+  {% set sty = state.style %}{% set prd = state.products %}
+  {% if sty or prd %}
+  <div class="grid g2" style="margin-top:20px">
+  {% if sty %}
+  <div class="card">
+    <h3>Стандарт оформления {% if sty.configured %}<span class="badge {{ 'ok' if sty.ok else 'warn' }}">{{ 'соответствует' if sty.ok else 'нарушений: ' ~ sty.issues|length }}</span>{% endif %}</h3>
+    {% if sty.issues %}<table class="t compact small"><tr><th>Нарушение</th><th>Страницы</th><th>Доля текста</th></tr>
+      {% for i in sty.issues[:15] %}<tr><td>{{ i.title }}{% if i.sample %}<br><span class="muted">«{{ i.sample }}»</span>{% endif %}</td>
+        <td>{% for p in i.pages[:12] %}<a href="#" class="pgx" data-page="{{ p }}">{{ p }}</a>{{ ', ' if not loop.last }}{% endfor %}{% if i.pages|length > 12 %} …{% endif %}</td>
+        <td>{{ (i.share|string).replace('.', ',') }} %</td></tr>{% endfor %}</table>
+    {% elif not sty.configured %}<p class="muted">Стандарт не задан (Настройки → «Стандарт оформления»). Профиль документа ниже можно взять за основу.</p>{% endif %}
+    <details{% if not sty.configured %} open{% endif %}><summary>Профиль оформления документа</summary>
+      <p class="small"><b>Гарнитуры:</b> {% for f in sty.profile.fonts %}{{ f.names[0] if f.names else f.family }} — {{ (f.share|string).replace('.', ',') }} %{{ '; ' if not loop.last }}{% endfor %}</p>
+      <p class="small"><b>Кегли, пт:</b> {% for f in sty.profile.sizes %}{{ (f.size|string).replace('.0', '').replace('.', ',') }} — {{ (f.share|string).replace('.', ',') }} %{{ '; ' if not loop.last }}{% endfor %}</p>
+      <p class="small"><b>Цвета текста:</b> {% for f in sty.profile.colors %}<span class="swatch" style="background:{{ f.color }}"></span>{{ f.color }} — {{ (f.share|string).replace('.', ',') }} %{{ '; ' if not loop.last }}{% endfor %}</p>
+    </details>
+  </div>{% endif %}
+  {% if prd %}
+  <div class="card">
+    <h3>Справочник продукции <span class="badge {{ 'ok' if prd.ok else 'warn' }}">{{ 'расхождений нет' if prd.ok else 'замечаний: ' ~ prd.issues|length }}</span></h3>
+    <p class="muted small">Справочник «{{ prd.file }}», позиций {{ prd.loaded }}; в документе найдено артикулов справочника: {{ prd.found }}.</p>
+    {% if prd.issues %}<table class="t compact small"><tr><th>Стр.</th><th>Замечание</th></tr>
+      {% for i in prd.issues[:20] %}<tr><td>{% for p in (i.pages or [i.page])[:8] %}<a href="#" class="pgx" data-page="{{ p }}">{{ p }}</a>{{ ', ' if not loop.last }}{% endfor %}{% if (i.pages or [])|length > 8 %} …{% endif %}</td><td><b>{{ i.title }}</b><br>{{ i.detail }}<br><span class="muted">{{ i.text[:120] }}</span></td></tr>{% endfor %}</table>
+      {% if prd.issues|length > 20 %}<p class="muted small">Показаны 20 из {{ prd.issues|length }} — все в выгрузке.</p>{% endif %}{% endif %}
+  </div>{% endif %}
+  </div>
+  <p class="small"><a href="/job/{{ job.id }}/checks.xlsx">Выгрузить стандарт оформления и сверку со справочником (XLSX)</a> ·
+    <span class="muted">эти проверки не входят в 25 проверок отчета</span></p>
+  {% endif %}
+
   <div class="card" style="margin-top:20px">
     <h3>Замечания</h3>
     <p class="muted">Отметьте ✓ верные и ✕ ошибочные замечания, при необходимости поправьте текст (✎), затем нажмите
@@ -89,19 +123,19 @@
           class="{{ f.status }}">
         <td>{{ loop.index }}</td>
         <td><a href="#" class="pg" data-page="{{ f.page }}">стр. {{ f.page }}</a>, {{ f.clause }}</td>
-        <td>{{ f.type }}</td>
+        <td>{{ f.type }}{% if f.auto == 'learned' %}<div><span class="badge grey" title="Корректор раньше всегда отклонял такое замечание. Нажмите ✓, чтобы вернуть его в отчет.">скрыто по опыту</span></div>{% endif %}</td>
         <td class="f-src" data-mark="{{ f.bad }}">{{ f.src }}</td>
         <td class="f-fix" data-mark="{{ f.good }}">{{ f.fix }}</td>
         <td class="f-note">{{ f.note }}</td>
-        <td class="acts"><button title="Принять" data-act="accepted">✓</button><button title="Отклонить" data-act="rejected">✕</button>
-          <button title="Изменить" data-act="edit">✎</button></td>
+        <td class="acts">{% if can('review') %}<button title="Принять" data-act="accepted">✓</button><button title="Отклонить" data-act="rejected">✕</button>
+          <button title="Изменить" data-act="edit">✎</button>{% else %}<span class="muted small">{{ {'accepted':'✓','rejected':'✕'}.get(f.status, '○') }}</span>{% endif %}</td>
       </tr>
       {% endfor %}
     </table>
     <h3 style="margin-top:24px">Итог</h3>
     <textarea id="summary">{{ state.meta.summary }}</textarea>
     <p class="muted">Итог — 2–4 предложения без рекомендаций (п. 0.16); слова «рекомендуется», «следует проверить» не допускаются.</p>
-    <p><button class="btn" id="rebuild" data-job="{{ job.id }}">Пересобрать отчет</button> <span id="rebuild-msg" class="muted"></span></p>
+    <p>{% if can('review') %}<button class="btn" id="rebuild" data-job="{{ job.id }}">Пересобрать отчет</button>{% endif %} <span id="rebuild-msg" class="muted"></span></p>
   </div>
 
   <div class="grid g2" style="margin-top:20px">

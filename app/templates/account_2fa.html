@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}Двухфакторный вход{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Двухфакторный вход</h1>
+  <div class="card" style="max-width:640px">
+  {% if codes %}
+    <p>Второй фактор подключен. Сохраните резервные коды — каждый срабатывает один раз, если телефон потерян. Больше они показаны не будут.</p>
+    <pre class="codes">{% for c in codes %}{{ c }}
+{% endfor %}</pre>
+    <p><a class="btn" href="/account">Готово</a></p>
+  {% else %}
+    <p>Установите на телефон приложение-аутентификатор (Яндекс Ключ, Google Authenticator, Microsoft Authenticator,
+    FreeOTP), отсканируйте код и введите шесть цифр из приложения. После этого при входе, кроме пароля, нужен будет код.</p>
+    {% include "_totp_setup.html" %}
+  {% endif %}
+  </div>
+</div></section>
+{% endblock %}

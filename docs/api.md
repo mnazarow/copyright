@@ -18,12 +18,15 @@ Authorization: Bearer <токен>
 | Метод | Адрес | Назначение |
 |---|---|---|
 | GET | `/api/health` | проверка работы (без авторизации) |
-| POST | `/api/jobs` | загрузить один или несколько PDF / ZIP; поля формы: `file` (повторяемое), `profile`, `mode` |
+| POST | `/api/jobs` | загрузить один или несколько PDF, DOCX, DOC, ODT, RTF или ZIP; поля формы: `file` (повторяемое), `profile`, `mode`, `author`, `department`, `doc_type` |
 | GET | `/api/jobs` | список последних заданий |
 | GET | `/api/jobs/{id}` | состояние задания, результат проверки, список замечаний |
-| GET | `/api/jobs/{id}/report?format=docx` | скачать отчет: `docx`, `pdf_annot`, `xlsx`, `csv`, `json` |
+| GET | `/api/jobs/{id}/report?format=docx` | скачать отчет: `docx`, `pdf_annot`, `xlsx`, `csv`, `json`, `docx_review` (правки в исходном Word) |
 | POST | `/api/jobs/{id}/findings/{fid}` | изменить замечание: `{"status": "accepted" \| "rejected" \| "new", "fix": "…", "good": "…", "note": "…", "type": "…"}` |
 | POST | `/api/jobs/{id}/rebuild` | пересобрать отчет; необязательно `{"summary": "…"}` |
+| GET | `/api/compare?a=ID&b=ID` | сравнение двух версий: сколько исправлено, осталось, новых; `details` — построчно |
+| POST | `/api/products?name=файл.csv` | обновить справочник продукции: тело — CSV (или multipart с полем `file`, CSV/XLSX); см. [Стандарт оформления и справочник](standards.md#автоматическое-обновление-из-1с) |
+| GET | `/metrics` | метрики Prometheus (см. [Уведомления и интеграции](integrations.md#9-мониторинг-метрики-prometheus)) |
 
 ### Аналитика и тренды
 
@@ -37,6 +40,7 @@ Authorization: Bearer <токен>
 | POST | `/api/analytics/glossary` | добавить пару в глоссарий: `{"good": "рым-болт", "bad": "рым болт"}` |
 | GET | `/api/trends` | данные раздела «Тренды»; дополнительно `gran` = `day` \| `week` \| `month` |
 | GET | `/api/trends/export?format=xlsx` | выгрузка трендов: `xlsx`, `csv`, `json` |
+| GET | `/analytics/report.pdf?period=30` | отчет для руководства в PDF с теми же фильтрами (только из браузера, вход по сеансу) |
 
 Фильтры аналитики и трендов передаются параметрами адреса: `period` (`7`, `30`, `90`, `180`, `365`, `all`, `custom`), `from` и `to` (ГГГГ-ММ-ДД, для `custom`), `q` (часть названия), `family`, `batch`, `job`, `type`, `source` (`typo`, `codes`, `house`, `data`, `spell`, `lt`, `ai`, `batch`, `cand`), `status` (`new`, `accepted`, `rejected`), `rule`.
 
@@ -46,7 +50,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$URL/api/trends?gran=month&period=365
   'import json,sys; t=json.load(sys.stdin); print(list(zip(t["labels"], t["series"]["density"])))'
 ```
 
-Токен API открывает только адреса `/api/…`; страницы настроек через токен недоступны.
+Токен API открывает только адреса `/api/…` и `/metrics` и действует с правами корректора (при разделении по отделам видит документы всех отделов); страницы настроек, пользователей и журнала через токен недоступны. Действия по токену записываются в журнал от имени `api`.
+
+Обратная связь без опроса: вебхук сам сообщает о готовом отчете (см. [Уведомления и интеграции, п. 4](integrations.md#4-вебхук-для-сэд-1с-битрикс24-n8n)).
 
 Состояния задания (`status`): `queued` — в очереди, `running` — выполняется (`progress` от 0 до 1, `step` — этап), `done` — готово, `failed` — ошибка (`error`).
 

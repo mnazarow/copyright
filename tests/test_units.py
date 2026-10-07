@@ -18,10 +18,10 @@ def test_password_and_token_unicode():
     assert core.check_password("тест-пароль")
     assert not core.check_password("неверно")
     assert not core.check_password("")
-    tok = core.make_token()
-    assert core.check_token(tok)
+    tok = core.make_token("admin", stamp="abc")
+    assert core.check_token(tok) == ("admin", "abc")
     assert not core.check_token(tok[:-1] + ("0" if tok[-1] != "0" else "1"))
-    assert not core.check_token("admin|абв|где")          # не ASCII — без исключения
+    assert not core.check_token("admin|абв|где|жз")       # не ASCII — без исключения
     assert not core.check_token("мусор")
 
 

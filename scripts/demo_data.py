@@ -33,6 +33,21 @@ EXTRA = [  # типичные смысловые ошибки — имитаци
 ]
 
 
+AUTHORS = [("Смирнова Е. (демо)", "Маркетинг"), ("Кузнецов Д. (демо)", "Технический отдел"),
+           ("Попова М. (демо)", "Маркетинг"), ("Соколов А. (демо)", "Отдел продаж"), ("Лебедева О. (демо)", "Технический отдел")]
+
+
+def doc_type_of(name):
+    n = name.lower()
+    if "мини" in n or "обзорн" in n and "каталог" in n:
+        return "Обзорный каталог"
+    if "брошюр" in n:
+        return "Брошюра"
+    if "паспорт" in n:
+        return "Паспорт изделия"
+    return "Каталог"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default=os.environ.get("KORREKTOR_DATA", "/var/lib/korrektor"), help="папка данных")
@@ -44,8 +59,10 @@ def main():
     db = sqlite3.connect(os.path.join(a.data, "korrektor.db"))
     db.row_factory = sqlite3.Row
     cols = {r[1] for r in db.execute("PRAGMA table_info(jobs)")}
-    if "started" not in cols:
-        db.execute("ALTER TABLE jobs ADD COLUMN started TEXT")
+    for col, ddl in (("started", "TEXT"), ("owner", "TEXT DEFAULT ''"), ("author", "TEXT DEFAULT ''"),
+                     ("department", "TEXT DEFAULT ''"), ("doc_type", "TEXT DEFAULT ''")):
+        if col not in cols:
+            db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
 
     if a.remove:
         ids = [r["id"] for r in db.execute("SELECT id FROM jobs WHERE batch LIKE 'demo-%'")]
@@ -96,8 +113,10 @@ def main():
         state = json.load(open(os.path.join(sdir, "state.json"), encoding="utf-8"))
         fs = state["findings"]
         # со временем документы чище: часть ошибок «исправлена» в новых версиях
+        ai = (k * 7 + v) % len(AUTHORS)
+        author, dept = AUTHORS[ai]
         keep = max(0.35, 1.15 - 0.55 * progress - 0.05 * (v - 1) + rnd.uniform(-0.12, 0.12))
-        fs = [f for f in fs if rnd.random() < keep]
+        fs = [f for f in fs if rnd.random() < keep * (0.75 + 0.12 * ai)]
         for typ, rule, src_txt, fix, good, note in EXTRA:
             if rnd.random() < 0.55 - 0.25 * progress:
                 fs.append({"page": rnd.randint(1, max(1, state["pages"])), "clause": "текст", "type": typ, "src": src_txt,
@@ -126,10 +145,10 @@ def main():
         started = t + dt.timedelta(seconds=rnd.randint(1, 40))
         finished = started + dt.timedelta(seconds=int(dur))
         cur = db.execute("INSERT INTO jobs(batch,name,filename,created,started,finished,status,progress,step,pages,findings,"
-                         "verify_ok,verify_score,size,settings) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         "verify_ok,verify_score,size,settings,author,department,owner,doc_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (bid, name, base["filename"], t.isoformat(), started.isoformat(), finished.isoformat(), "done", 1,
                           "Готово", state["pages"], len(fs), 1 if state["verify"]["ok"] else 0,
-                          f"{state['verify']['passed']}/{state['verify']['total']}", base["size"], "{}"))
+                          f"{state['verify']['passed']}/{state['verify']['total']}", base["size"], "{}", author, dept, "demo", doc_type_of(base["name"])))
         jid = cur.lastrowid
         ddir = os.path.join(a.data, "jobs", str(jid))
         shutil.copytree(sdir, ddir, copy_function=_link, ignore=shutil.ignore_patterns("state.json", "stats.json", "timing.json"))

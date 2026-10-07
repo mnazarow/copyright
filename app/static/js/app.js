@@ -19,7 +19,7 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': 
     btn.disabled = dt.files.length === 0;
     hint.textContent = dt.files.length ? `Файлов: ${dt.files.length}` + (dt.files.length > 1 ? ' — будет создан пакет' : '') : 'Выберите файл';
   }
-  function add(files) { Array.from(files).forEach(f => { if (/\.(pdf|zip)$/i.test(f.name)) dt.items.add(f); }); render(); }
+  function add(files) { Array.from(files).forEach(f => { if (/\.(pdf|zip|docx?|odt|rtf)$/i.test(f.name)) dt.items.add(f); }); render(); }
   drop.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') input.click(); });
   input.addEventListener('change', () => { const fs = Array.from(input.files); dt.items.clear(); add(fs); });
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
@@ -94,7 +94,7 @@ function initJob(id) {
   ['#flt-type', '#flt-status', '#flt-src'].forEach(s => $(s) && $(s).addEventListener('change', apply));
   $('#flt-q') && $('#flt-q').addEventListener('input', apply);
   if ($('#findings')) apply();
-  $$('#findings .pg').forEach(a => a.addEventListener('click', e => {
+  $$('#findings .pg, .pgx').forEach(a => a.addEventListener('click', e => {
     e.preventDefault();
     $('#viewer-img').src = `/job/${id}/page/${a.dataset.page}.png`;
     $('#viewer-title').textContent = 'Страница ' + a.dataset.page;
@@ -163,10 +163,33 @@ function initSettings() {
     if (el) { el.classList.add('open', 'focus'); setTimeout(() => el.scrollIntoView({block: 'center'}), 50); }
   }
 }
+async function testLdap(btn) {
+  const out = btn.nextElementSibling, fd = new FormData();
+  fd.append('login', $('#ldap-login').value); fd.append('password', $('#ldap-pw').value);
+  out.textContent = 'Проверка…';
+  const r = await fetch('/settings/test-ldap', {method: 'POST', body: fd}).then(x => x.json()).catch(e => ({ok: false, error: String(e)}));
+  out.textContent = r.ok ? '✅ ' + r.answer : '❌ ' + r.error;
+}
 async function testConn(url, btn) {
   const out = btn.nextElementSibling; out.textContent = 'Проверка… (сначала сохраните настройки)';
   const r = await fetch(url, {method: 'POST'}).then(x => x.json()).catch(e => ({ok: false, error: String(e)}));
   out.textContent = r.ok ? '✅ ' + (r.answer || 'связь есть') : '❌ ' + r.error;
+}
+async function restoreBackup(name, btn) {
+  const word = prompt('Восстановить данные из копии ' + name + '?\n\nЗадания, пользователи, настройки и журнал будут заменены ' +
+    'содержимым копии. Текущие данные сначала будут сохранены отдельной копией.\n\nДля подтверждения введите слово ВОССТАНОВИТЬ:');
+  if (word === null) return;
+  const out = btn.parentElement.querySelector('.bk-out'); out.textContent = 'Восстановление… не закрывайте страницу';
+  const fd = new FormData(); fd.append('confirm', word.trim());
+  const r = await fetch('/settings/backups/' + encodeURIComponent(name) + '/restore', {method: 'POST', body: fd})
+    .then(x => x.json()).catch(e => ({ok: false, error: String(e)}));
+  out.textContent = r.ok ? '✅ ' + r.answer : '❌ ' + r.error;
+}
+async function verifyBackup(name, btn) {
+  const out = btn.parentElement.querySelector('.bk-out'); out.textContent = 'Проверка целостности…';
+  const r = await fetch('/settings/backups/' + encodeURIComponent(name) + '/verify', {method: 'POST'})
+    .then(x => x.json()).catch(e => ({ok: false, answer: String(e)}));
+  out.textContent = (r.ok ? '✅ ' : '❌ ') + r.answer;
 }
 async function genToken(btn) {
   if (!confirm('Создать новый токен API? Старый перестанет работать.')) return;
@@ -174,3 +197,16 @@ async function genToken(btn) {
   prompt('Новый токен (скопируйте, он больше не будет показан):', r.token);
   location.reload();
 }
+
+/* ---------- тема ---------- */
+(function () {
+  const b = document.getElementById('theme-tg'); if (!b) return;
+  const order = [null, 'dark', 'light'], names = {null: 'как в системе', dark: 'темная', light: 'светлая'};
+  let cur = null; try { cur = localStorage.getItem('korrektor-theme'); } catch (e) {}
+  b.title = 'Тема: ' + names[cur] + ' (нажмите, чтобы сменить)';
+  b.addEventListener('click', () => {
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    try { next ? localStorage.setItem('korrektor-theme', next) : localStorage.removeItem('korrektor-theme'); } catch (e) {}
+    location.reload();
+  });
+})();

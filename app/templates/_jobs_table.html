@@ -1,10 +1,11 @@
 <table class="t" id="jobs-table">
-<tr><th>№</th><th>Документ</th><th>Загружен</th><th>Страниц</th><th>Состояние</th><th>Замечаний</th><th>Проверка оформления</th></tr>
+<tr><th>№</th><th>Документ</th><th>Автор · отдел</th><th>Загружен</th><th>Страниц</th><th>Состояние</th><th>Замечаний</th><th>Проверка оформления</th></tr>
 {% for j in jobs %}
 <tr data-job="{{ j.id }}" data-status="{{ j.status }}">
   <td>{{ j.id }}</td>
-  <td><a href="/job/{{ j.id }}">{{ j.name }}</a>{% if j.batch and jobs|selectattr('batch','equalto',j.batch)|list|length > 1 %}
+  <td><a href="/job/{{ j.id }}">{{ j.name }}</a>{% if j.doc_type %} <span class="badge grey">{{ j.doc_type }}</span>{% endif %}{% if j.batch and jobs|selectattr('batch','equalto',j.batch)|list|length > 1 %}
     <br><a class="muted" href="/batch/{{ j.batch }}">пакет</a>{% endif %}</td>
+  <td class="muted small">{{ j.author or '—' }}{% if j.department %}<br>{{ j.department }}{% endif %}{% if j.owner and j.owner != j.author %}<br><span title="загрузил">↑ {{ j.owner }}</span>{% endif %}</td>
   <td>{{ j.created.replace('T',' ')[:16] }}</td>
   <td>{{ j.pages or '—' }}</td>
   <td class="js-status">{% if j.status=='done' %}<span class="badge ok">готово</span>

@@ -9,7 +9,7 @@ import sys
 
 import pymupdf
 
-from . import autofix, exports, llm, preflight, spell
+from . import autofix, exports, llm, office, preflight, spell
 from .common import AUTHOR, PageIndex, norm, page_list, yo
 
 SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
@@ -201,6 +201,23 @@ def build_report(job_dir, state, st, log):
             log(f"PDF с пометками: подсвечено {n} из {len(fl)} замечаний")
         except Exception as e:  # noqa
             log(f"PDF с пометками не создан: {e}")
+    src = office.find_source(job_dir)
+    if src and "docx_review" in fm:
+        try:
+            from . import docx_review
+            work = src
+            if not src.lower().endswith(".docx"):
+                work = os.path.join(job_dir, "source_converted.docx")
+                if not os.path.exists(work):
+                    office.to_docx(src, work)
+            name = base + "_рецензия.docx"
+            nc, nch, miss = docx_review.review(work, fl, os.path.join(job_dir, name),
+                                               author=st.get("review_author") or "Корректор")
+            files["docx_review"] = name
+            log(f"Правки в исходном Word: примечаний {nc}, исправлений в режиме рецензирования {nch}, "
+                f"не найдено в тексте {miss}")
+        except Exception as e:  # noqa
+            log(f"Правки в исходном Word не созданы: {e}")
     ver["files"] = files
     ver["count"] = len(fl)
     return ver
@@ -208,6 +225,13 @@ def build_report(job_dir, state, st, log):
 
 def process(job_dir, name, st, log, progress, job_id=0):
     pdf = os.path.join(job_dir, "source.pdf")
+    if not os.path.exists(pdf):
+        src = office.find_source(job_dir)
+        if not src:
+            raise RuntimeError("Исходный файл не найден")
+        progress(0.02, "Преобразование документа в PDF (LibreOffice)")
+        office.to_pdf(src, pdf)
+        log(f"Документ {os.path.basename(src)} преобразован в PDF")
     progress(0.03, "Извлечение текста и координат строк")
     code, out, err = sh([os.path.join(SCRIPTS, "extract.py"), pdf], job_dir)
     open(os.path.join(job_dir, "extract.log"), "w", encoding="utf-8").write(out + err)
@@ -230,6 +254,27 @@ def process(job_dir, name, st, log, progress, job_id=0):
             ocr_done = preflight.ocr_pages(pdf, scans, dump, log)
             if ocr_done:
                 json.dump(dump, open(os.path.join(job_dir, "dump.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    style_res = None
+    if st.get("style_enabled", True):
+        progress(0.22, "Стандарт оформления: шрифты, кегли, цвета, поля")
+        try:
+            from . import style
+            style_res = style.check(pdf, st)
+            log(f"Стандарт оформления: {style.summary(style_res)}")
+        except Exception as e:  # noqa
+            log(f"Проверка оформления пропущена: {e}")
+    products_res = None
+    if st.get("products_enabled", True):
+        try:
+            from . import products
+            ref = products.load(products.PATH())
+            if ref:
+                progress(0.24, "Сверка со справочником продукции")
+                products_res = products.check(dump, ref, st)
+                log(f"Справочник продукции ({products_res['loaded']} позиций): найдено артикулов "
+                    f"{products_res['found']}, замечаний {len(products_res['issues'])}")
+        except Exception as e:  # noqa
+            log(f"Сверка со справочником пропущена: {e}")
     idx = PageIndex(dump)
     passes = set(st.get("passes") or [])
     hits, rejected = [], []
@@ -313,13 +358,30 @@ def process(job_dir, name, st, log, progress, job_id=0):
     for nm, items in cats.items():
         reviewed.append({"category": nm, "result": f"Проверено автоматически: {len(items)} кандидатов; дефекты вынесены "
                                                   "в замечания по правилам сервиса, остальное — не дефекты."})
+    thr = int(st.get("learn_reject_threshold") or 0)
+    if thr:
+        try:
+            from .. import analytics
+            learned = analytics.learned_rejections(thr, exclude_job=job_id)
+            hidden = 0
+            for f in findings:
+                n = learned.get(analytics.learn_key(f.get("rule"), f.get("bad")))
+                if n:
+                    f["status"], f["auto"] = "rejected", "learned"
+                    f["note"] = f["note"].rstrip() + f" [Скрыто по опыту: корректор отклонял такое замечание в {n} документах.]"
+                    hidden += 1
+            if hidden:
+                log(f"Обучение на решениях корректора: скрыто {hidden} замечаний, которые раньше всегда отклонялись")
+        except Exception as e:  # noqa
+            log(f"Обучение на решениях пропущено: {e}")
     for i, f in enumerate(findings, 1):
         f.setdefault("status", "new")
         f["id"] = i
     meta = make_meta(name + ".pdf", dump, findings, pf, st, ocr_done, scans)
     state = {"findings": findings, "rejected": rejected, "reviewed": reviewed, "meta": meta,
              "pages": dump.get("pages_count", 0), "preflight": pf, "running": dump.get("running_titles", {}),
-             "page_refs": dump.get("page_refs", []), "report_base": report_name(st, name, job_id)}
+             "page_refs": dump.get("page_refs", []), "report_base": report_name(st, name, job_id),
+             "style": style_res, "products": products_res}
     progress(0.85, "Сборка отчета DOCX и машинная проверка (25 требований)")
     state["verify"] = build_report(job_dir, state, st, log)
     tmp = os.path.join(job_dir, "state.json.tmp")

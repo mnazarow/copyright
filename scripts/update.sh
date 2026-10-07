@@ -85,6 +85,13 @@ copy_tree "$SRC" $PREFIX
 chown -R root:root $PREFIX/app $PREFIX/scripts $PREFIX/docs 2>/dev/null || true
 find $PREFIX -maxdepth 1 -type f -exec chown root:root {} + 2>/dev/null || true
 chown -R $APP:$APP $PREFIX/app/prompts 2>/dev/null || true
+mkdir -p /var/backups/$APP && chown root:$APP /var/backups/$APP && chmod 2770 /var/backups/$APP
+# команда управления korrektor — из новой версии установщика (новые подкоманды: verify, restore, 2fa-off…)
+if [ -f $PREFIX/scripts/install.sh ]; then
+  sed -n "/^cat >\/usr\/local\/bin\/korrektor <<'EOF'$/,/^EOF$/p" $PREFIX/scripts/install.sh | sed '1d;$d' > /usr/local/bin/korrektor.new \
+    && [ -s /usr/local/bin/korrektor.new ] && chmod 755 /usr/local/bin/korrektor.new && mv /usr/local/bin/korrektor.new /usr/local/bin/korrektor \
+    || rm -f /usr/local/bin/korrektor.new
+fi
 svc daemon-reload 2>/dev/null || true
 svc start $APP
 PORT=$(grep '^KORREKTOR_PORT=' $ENVF | cut -d= -f2)

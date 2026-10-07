@@ -6,27 +6,41 @@
 <title>{% block title %}Корректор{% endblock %} · ВОДОКОМФОРТ</title>
 <link rel="stylesheet" href="/static/css/fonts.css?v={{ version }}">
 <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
-<link rel="icon" href="/static/img/logo.svg">
+<link rel="icon" href="/static/img/logo-mark.svg">
+<meta name="color-scheme" content="light dark">
+<script>
+/* тема до отрисовки страницы: выбор пользователя (localStorage) или настройка системы */
+(function () {
+  var t = null; try { t = localStorage.getItem('korrektor-theme'); } catch (e) {}
+  var d = document.documentElement;
+  if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  var dark = t === 'dark' || (!t && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+  d.classList.toggle('dark', dark);
+})();
+</script>
 </head>
-<body>
+<body data-role="{{ user.role if user else '' }}">
 <div class="topbar"><div class="wrap">
   <span>Внутренний сервис корректорской вычитки · мастер-промпт v5.7</span>
-  <span>{% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} · версия {{ version }}
-  {% if auth_on and page != 'login' %} · <a href="/logout">Выйти</a>{% endif %}</span>
+  <span><button type="button" class="theme-tg" id="theme-tg" title="Светлая / темная тема / как в системе">◐</button> · {% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} · версия {{ version }}
+  {% if user and page != 'login' %} · <a href="/account" title="Профиль">{{ user.name or user.login }}</a> ({{ ROLES.get(user.role, '') }})
+    {% if can('admin') %} · <a href="/admin/users">Пользователи</a> · <a href="/admin/audit">Журнал</a>{% endif %}
+    {% if auth_on %} · <a href="/logout">Выйти</a>{% endif %}{% endif %}</span>
 </div></div>
 <header class="header"><div class="wrap">
   <a class="logo" href="/">
-    <img src="/static/img/logo.svg" alt="" width="38" height="38">
-    <span><span class="brand">ВОДОКОМФОРТ</span><br><span class="sub">инжиниринг</span></span>
+    <img class="logo-img logo-light" src="/static/img/logo.svg" alt="Водокомфорт" height="60">
+    <img class="logo-img logo-dark" src="/static/img/logo-dark.svg" alt="Водокомфорт" height="60">
     <span class="sep"></span><span class="product">Корректор</span>
   </a>
   {% if page != 'login' %}
+  <button type="button" class="burger" aria-label="Меню" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button>
   <nav class="nav">
     <a href="/" class="{{ 'active' if page=='index' }}">Проверка</a>
     <a href="/jobs" class="{{ 'active' if page=='jobs' }}">Задания</a>
     <a href="/analytics" class="{{ 'active' if page=='analytics' }}">Аналитика</a>
     <a href="/trends" class="{{ 'active' if page=='trends' }}">Тренды</a>
-    <a href="/settings" class="{{ 'active' if page=='settings' }}">Настройки</a>
+    {% if not user or can('admin') %}<a href="/settings" class="{{ 'active' if page=='settings' }}">Настройки</a>{% endif %}
     <a href="/docs" class="{{ 'active' if page=='docs' }}">Документация</a>
   </nav>
   <a class="btn" href="/#upload">Проверить документ</a>

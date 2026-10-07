@@ -22,9 +22,9 @@
       <form id="upform" method="post" action="/upload" enctype="multipart/form-data">
         <div class="drop" id="drop">
           <div class="ico">⬆</div>
-          <h3>Перетащите сюда PDF или ZIP с несколькими PDF</h3>
+          <h3>Перетащите сюда PDF, документ Word или ZIP с несколькими файлами</h3>
           <div class="muted">или нажмите, чтобы выбрать файлы · до {{ st.max_upload_mb }} МБ на файл</div>
-          <input type="file" name="files" id="fileinput" accept=".pdf,.zip" multiple hidden>
+          <input type="file" name="files" id="fileinput" accept=".pdf,.zip{% if st.office_convert %},.docx,.doc,.odt,.rtf{% endif %}" multiple hidden>
           <ul class="files" id="filelist"></ul>
         </div>
         <div class="form-row">
@@ -36,6 +36,18 @@
             {% for v,t in modes %}<option value="{{ v }}">{{ t }}</option>{% endfor %}</select></div>
           <div><label class="f">Строка в шапку отчета (необязательно)</label>
             <input type="text" name="note" placeholder="Например: Корректор: И. И. Иванов"></div>
+        </div>
+        <div class="form-row">
+          <div><label class="f">Автор документа{% if st.upload_author_required %} *{% endif %}</label>
+            <input type="text" name="author" list="authors" value="{{ user.name if user and user.role == 'author' else '' }}"
+              placeholder="Кто готовил документ" {{ 'required' if st.upload_author_required }}>
+            <datalist id="authors">{% for a in authors %}<option value="{{ a }}">{% endfor %}</datalist></div>
+          <div><label class="f">Отдел</label>
+            <select name="department"{% if st.department_scope and user and user.role != 'admin' %} disabled title="При разделении по отделам документ попадает в ваш отдел"{% endif %}><option value="">—</option>
+            {% for d in (st.departments or '').splitlines() if d.strip() %}<option {{ 'selected' if user and user.department == d.strip() }}>{{ d.strip() }}</option>{% endfor %}</select></div>
+          <div><label class="f">Тип документа</label>
+            <select name="doc_type"><option value="">—</option>
+            {% for d in (st.doc_types or '').splitlines() if d.strip() %}<option>{{ d.strip() }}</option>{% endfor %}</select></div>
         </div>
         <p style="margin-top:18px"><button class="btn" id="upbtn" type="submit" disabled>Проверить</button>
         <span class="muted" id="uphint">Выберите файл</span></p>

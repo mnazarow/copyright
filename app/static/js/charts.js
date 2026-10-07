@@ -4,8 +4,12 @@
    одна ось Y на график; тонкие линии 2 px; у каждого графика есть табличный вид и выгрузка. */
 
 /* ---------- палитра ---------- */
-const PAL = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
-const OTHER = '#9aa3ad';
+const DARK = document.documentElement.classList.contains('dark');
+const ROLE = document.body.dataset.role || 'admin';      // роль пользователя: кнопки действий показываются по правам
+/* категориальная палитра: свои ступени для светлой и темной темы (проверены валидатором, обе — PASS) */
+const PAL = DARK ? ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767']
+  : ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const OTHER = DARK ? '#6b7686' : '#9aa3ad';
 const TYPES_ORDER = ['Орфография', 'Пунктуация', 'Грамматика', 'Стилистика', 'Типографика', 'Единообразие', 'Логика',
   'Требует проверки автором'];
 const TYPE_COLOR = Object.fromEntries(TYPES_ORDER.map((t, i) => [t, PAL[i]]));
@@ -15,7 +19,8 @@ const STATUS = {accepted: {c: '#0ca30c', i: '✓', l: 'Принято'}, rejecte
   new: {c: OTHER, i: '○', l: 'Не просмотрено'}};
 const SEQ = ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf',
   '#1c5cab', '#184f95', '#104281', '#0d366b'];
-const INK = '#1d2433', MUTED = '#6b7280', GRID = '#e9edf2', TREND = '#7b8594';
+const INK = DARK ? '#e6eaf0' : '#1d2433', MUTED = DARK ? '#9aa6b6' : '#6b7280', GRID = DARK ? '#2c3545' : '#e9edf2',
+  TREND = DARK ? '#8a96a8' : '#7b8594', SURFACE = DARK ? '#1b2230' : '#ffffff';
 const srcColor = k => SRC_COLOR[k] || OTHER;
 
 /* ---------- форматирование ---------- */
@@ -23,11 +28,11 @@ const nf = (v, d) => v === null || v === undefined || Number.isNaN(v) ? '—'
   : Number(v).toLocaleString('ru-RU', {maximumFractionDigits: d === undefined ? 1 : d});
 const short = (s, n) => (s = String(s || '')).length > n ? s.slice(0, n - 1) + '…' : s;
 function seqColor(v, max) {
-  if (!v) return '#f4f6f9';
+  if (!v) return DARK ? '#232c3b' : '#f4f6f9';
   const i = Math.min(SEQ.length - 1, Math.floor((v / (max || 1)) * (SEQ.length - 1)));
   return SEQ[i];
 }
-const seqInk = (v, max) => v && v / (max || 1) > 0.5 ? '#fff' : INK;
+const seqInk = (v, max) => v && v / (max || 1) > 0.5 ? '#fff' : (DARK && v ? '#0b1019' : INK);
 
 /* ---------- Chart.js: общие настройки ---------- */
 if (window.Chart) {
@@ -40,7 +45,7 @@ if (window.Chart) {
   Chart.defaults.plugins.legend.labels.boxWidth = 12;
   Chart.defaults.plugins.legend.labels.boxHeight = 12;
   Chart.defaults.plugins.legend.labels.color = INK;
-  Chart.defaults.plugins.tooltip.backgroundColor = '#0e1a2b';
+  Chart.defaults.plugins.tooltip.backgroundColor = DARK ? '#0b1019' : '#0e1a2b';
   Chart.defaults.plugins.tooltip.padding = 10;
   Chart.defaults.plugins.tooltip.cornerRadius = 4;
   Chart.defaults.elements.bar.borderRadius = 4;
@@ -52,7 +57,7 @@ if (window.Chart) {
   // белый фон для выгрузки PNG
   Chart.register({id: 'bgWhite', beforeDraw(c) {
     const x = c.ctx; x.save(); x.globalCompositeOperation = 'destination-over'; x.fillStyle = '#fff';
-    x.fillRect(0, 0, c.width, c.height); x.restore();
+    x.fillStyle = SURFACE; x.fillRect(0, 0, c.width, c.height); x.restore();
   }});
   // подписи значений на конце столбцов (только у столбчатых графиков с опцией endLabels)
   Chart.register({id: 'endLabels', afterDatasetsDraw(c, _, opts) {
@@ -72,12 +77,17 @@ if (window.Chart) {
   }});
   // опорная линия (среднее) — сплошная тонкая
   Chart.register({id: 'refLine', afterDatasetsDraw(c, _, opts) {
-    if (!opts || opts.value === undefined || opts.value === null) return;
-    const y = c.scales.y, xs = c.scales.x; if (!y) return;
-    const py = y.getPixelForValue(opts.value), x = c.ctx;
-    x.save(); x.strokeStyle = INK; x.lineWidth = 1; x.beginPath(); x.moveTo(xs.left, py); x.lineTo(xs.right, py); x.stroke();
-    x.fillStyle = INK; x.font = '12px Roboto, Arial'; x.textAlign = 'right'; x.textBaseline = 'bottom';
-    x.fillText(opts.label, xs.right - 4, py - 3); x.restore();
+    const lines = (opts && opts.lines) || (opts && opts.value !== undefined && opts.value !== null ? [opts] : []);
+    const y = c.scales.y, xs = c.scales.x; if (!y || !lines.length) return;
+    const x = c.ctx; x.save();
+    lines.forEach((ln, i) => {
+      if (ln.value === undefined || ln.value === null || ln.value > y.max || ln.value < y.min) return;
+      const py = y.getPixelForValue(ln.value);
+      x.strokeStyle = ln.color || INK; x.lineWidth = ln.width || 1; x.beginPath(); x.moveTo(xs.left, py); x.lineTo(xs.right, py); x.stroke();
+      x.fillStyle = ln.color || INK; x.font = '12px Roboto, Arial'; x.textAlign = i % 2 ? 'left' : 'right'; x.textBaseline = 'bottom';
+      x.fillText(ln.label, i % 2 ? xs.left + 4 : xs.right - 4, py - 3);
+    });
+    x.restore();
   }});
 }
 
@@ -168,8 +178,8 @@ function initCards() {
 
 /* ---------- фильтры (хранятся в адресной строке) ---------- */
 const F = {};
-const FILTER_KEYS = ['gran', 'period', 'from', 'to', 'q', 'family', 'batch', 'type', 'source', 'status', 'rule', 'job'];
-const CHIP_NAMES = {q: 'Документ', family: 'Семейство', batch: 'Пакет', type: 'Тип', source: 'Источник', status: 'Статус',
+const FILTER_KEYS = ['gran', 'period', 'from', 'to', 'q', 'family', 'batch', 'author', 'department', 'doc_type', 'type', 'source', 'status', 'rule', 'job'];
+const CHIP_NAMES = {q: 'Документ', family: 'Семейство', batch: 'Пакет', author: 'Автор', department: 'Отдел', doc_type: 'Вид документа', type: 'Тип', source: 'Источник', status: 'Статус',
   rule: 'Правило', job: 'Задание'};
 let FILTER_OPTS = null, onFilterChange = null, LABELS = {source: {}, status: {}, rule: {}, job: {}, batch: {}};
 
@@ -201,6 +211,9 @@ function fillOptions(o) {
   add('source', o.sources.map(s => [s.key, s.label]));
   add('status', o.statuses.map(s => [s.key, STATUS[s.key].i + ' ' + s.label]));
   add('family', o.families.filter(f => f.n > 1).map(f => [f.key, `${short(f.key, 40)} (${f.n})`]));
+  add('author', (o.authors || []).map(a => [a, a]));
+  add('department', (o.departments || []).map(a => [a, a]));
+  add('doc_type', (o.doc_types || []).map(a => [a, a]));
   add('batch', o.batches.map(b => [b.id, `${b.date} · ${short(b.first, 26)} и еще ${b.n - 1}`]));
   o.sources.forEach(s => { LABELS.source[s.key] = s.label; });
   o.statuses.forEach(s => { LABELS.status[s.key] = s.label; });
@@ -212,7 +225,7 @@ function syncForm() {
   const form = $('#afilters'); if (!form) return;
   $$('.seg', form).forEach(seg => $$('button', seg).forEach(b => b.classList.toggle('on', b.dataset.v === F[seg.dataset.name])));
   $('.custom-dates', form).hidden = F.period !== 'custom';
-  ['from', 'to', 'q', 'family', 'batch', 'type', 'source', 'status'].forEach(k => {
+  ['from', 'to', 'q', 'family', 'batch', 'author', 'department', 'doc_type', 'type', 'source', 'status'].forEach(k => {
     const el = form.elements[k]; if (el) el.value = F[k] || '';
   });
   const chips = $('#chips'); chips.innerHTML = '';
@@ -259,7 +272,7 @@ async function getJson(url) {
 async function postJson(url, body) {
   const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.detail || r.statusText);
+  if (!r.ok) throw new Error(j.detail || j.error || r.statusText);
   return j;
 }
 
@@ -274,7 +287,7 @@ function hbar(id, items, opt) {
     options: {
       indexAxis: 'y', layout: {padding: {right: 40}},
       scales: {x: {beginAtZero: true, grid: {color: GRID}, ticks: {precision: 0}, title: {display: !!opt.xTitle, text: opt.xTitle}},
-        y: {grid: {display: false}, ticks: {color: INK, callback(v) { return short(this.getLabelForValue(v), opt.trim || 34); }}}},
+        y: {grid: {display: false}, ticks: {color: INK, callback(v) { return short(this.getLabelForValue(v), window.innerWidth < 600 ? 16 : (opt.trim || 34)); }}}},
       plugins: {endLabels: {on: true, fmt: opt.fmt}, tooltip: {callbacks: opt.tooltip || {}}},
       onClick: opt.onClick ? (e, els) => { if (els.length) opt.onClick(items[els[0].index]); } : undefined,
       onHover: opt.onClick ? (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; } : undefined,
@@ -306,7 +319,7 @@ function line(id, labels, datasets, opt) {
   const many = labels.length > 30;
   datasets.forEach((d, i) => Object.assign(d, Object.assign({
     borderColor: d.color || PAL[i], backgroundColor: d.color || PAL[i], pointRadius: many ? 0 : 4,
-    pointBackgroundColor: d.color || PAL[i], pointBorderColor: '#fff', pointBorderWidth: 2, spanGaps: true, fill: false,
+    pointBackgroundColor: d.color || PAL[i], pointBorderColor: SURFACE, pointBorderWidth: 2, spanGaps: true, fill: false,
   }, d)));
   mkChart(id, {
     type: 'line', data: {labels, datasets},
@@ -315,7 +328,8 @@ function line(id, labels, datasets, opt) {
       scales: {y: {beginAtZero: opt.zero !== false, max: opt.max, grid: {color: GRID}, title: {display: !!opt.yTitle, text: opt.yTitle},
         ticks: {callback: v => nf(v) + (opt.unit || '')}},
         x: {grid: {display: false}, ticks: {color: INK, maxRotation: 0, autoSkip: true, autoSkipPadding: 12}}},
-      plugins: {legend: {display: datasets.filter(d => !d.noLegend).length > 1, position: 'top', align: 'end',
+      plugins: {refLine: opt.goal ? {lines: [{value: opt.goal, label: 'цель ' + nf(opt.goal) + (opt.unit || ''), color: '#d03b3b', width: 1.5}]} : {},
+        legend: {display: datasets.filter(d => !d.noLegend).length > 1, position: 'top', align: 'end',
         labels: {filter: (it, data) => !data.datasets[it.datasetIndex].noLegend}},
       tooltip: {callbacks: {label: c => c.raw === null ? null : `${c.dataset.label}: ${nf(c.raw, 2)}${opt.unit || ''}`}}},
     },
@@ -331,7 +345,7 @@ function stacked(id, labels, series, colorOf, opt) {
   mkChart(id, {
     type: 'bar',
     data: {labels, datasets: keys.map(k => ({label: k, data: labels.map((_, i) => val(k, i)), backgroundColor: colorOf(k),
-      borderColor: '#fff', borderWidth: 1, borderRadius: 0, borderSkipped: false, barPercentage: 0.9, categoryPercentage: 0.9,
+      borderColor: SURFACE, borderWidth: 1, borderRadius: 0, borderSkipped: false, barPercentage: 0.9, categoryPercentage: 0.9,
       maxBarThickness: 46}))},
     options: {
       interaction: {mode: 'index', intersect: false},
@@ -368,6 +382,15 @@ function statusPill(s) { const x = STATUS[s] || STATUS.new; return `<span class=
 function setKpi(id, v, d, suffix) {
   const el = document.getElementById('k-' + id); if (!el) return;
   $('b', el).textContent = nf(v, d) + (v !== null && v !== undefined && suffix ? suffix : '');
+}
+
+const GOAL_SIGN = {density: '≤', author_share: '≤', precision: '≥', verify_rate: '≥'};
+function setGoal(id, goal, state) {
+  // цель под значением плитки: значок + подпись, цвет только вместе с текстом
+  const el = document.getElementById('k-' + id); if (!el || !goal) return;
+  const i = $('i', el);
+  const mark = state === 'ok' ? '<span class="delta good">✓ в пределах цели</span>' : state === 'bad' ? '<span class="delta bad">! цель не выполнена</span>' : '';
+  i.innerHTML = `<span class="muted">цель ${GOAL_SIGN[id]} ${nf(goal)}</span> ${mark}`;
 }
 
 function loadingState(on) { document.body.classList.toggle('a-loading', on); }
@@ -412,6 +435,7 @@ function renderAnalytics(d) {
     `замечаний на документ: <b>${nf(k.per_doc)}</b>`,
     `${STATUS.accepted.i} принято <b>${nf(k.accepted, 0)}</b> · ${STATUS.rejected.i} отклонено <b>${nf(k.rejected, 0)}</b> · ${STATUS.new.i} не просмотрено <b>${nf(k.new, 0)}</b>`,
     `отредактировано: <b>${nf(k.edited, 0)}</b>`,
+    k.auto_hidden ? `скрыто по опыту: <b>${nf(k.auto_hidden, 0)}</b>` : '',
     `кандидатов отсеяно машинно: <b>${nf(k.auto_rejected, 0)}</b>`,
     `медиана времени: <b>${nf(k.median_duration)}</b> с, <b>${nf(k.sec_per_page, 2)}</b> с/стр.`,
     k.failed ? `<span class="warn-t">⚠ заданий с ошибкой: <b>${k.failed}</b></span>` : '',
@@ -437,7 +461,8 @@ function renderAnalytics(d) {
   const dens = d.density.slice(0, 30);
   dens.forEach(r => { LABELS.job[r.id] = r.name; });
   vbar('density', dens.map(r => r.name), dens.map(r => r.density), {series: 'На 10 страниц', rot: 40, trim: 22, labels: false,
-    ref: k.density ? {value: k.density, label: 'в среднем ' + nf(k.density, 2)} : {},
+    ref: {lines: [k.density ? {value: k.density, label: 'в среднем ' + nf(k.density, 2)} : null,
+      d.goals.density ? {value: d.goals.density, label: 'цель ' + nf(d.goals.density, 1), color: '#d03b3b', width: 1.5} : null].filter(Boolean)},
     tooltip: {title: it => dens[it[0].dataIndex].name,
       afterLabel: c => { const r = dens[c.dataIndex]; return `${r.findings} замеч. на ${r.pages} стр. · ${r.created} · ${r.verify_ok ? '25/25 ✓' : 'проверка не пройдена ✕'}`; }},
     head: ['№', 'Документ', 'Дата', 'Страниц', 'Замечаний', 'На 10 страниц'],
@@ -452,7 +477,7 @@ function renderAnalytics(d) {
 
   mkChart('duration', {
     type: 'scatter',
-    data: {datasets: [{label: 'Документ', data: d.duration, backgroundColor: PAL[0] + 'cc', borderColor: '#fff', borderWidth: 1.5,
+    data: {datasets: [{label: 'Документ', data: d.duration, backgroundColor: PAL[0] + 'cc', borderColor: SURFACE, borderWidth: 1.5,
       pointRadius: 5, pointHoverRadius: 7}]},
     options: {
       scales: {x: {beginAtZero: true, title: {display: true, text: 'страниц'}, grid: {color: GRID}},
@@ -481,6 +506,64 @@ function renderAnalytics(d) {
   renderRuleTab(d.rules);
   renderRecurring(d.recurring);
   renderUnknown(d.unknown);
+  Object.entries(d.goals).forEach(([key, g]) => setGoal(key, g, d.goal_state[key]));
+  renderRecs(d.recommendations);
+  renderAuthors(d.by_author, d.goals);
+  hbar('doctypes', d.by_doc_type.map(r => ({...r, n: r.density || 0})), {series: 'На 10 страниц', head: ['Вид документа', 'Документов', 'Замечаний', 'На 10 страниц'],
+    rows: d.by_doc_type.map(r => [r.label, r.docs, r.findings, r.density]), fmt: v => nf(v, 2),
+    tooltip: {afterLabel: c => { const r = d.by_doc_type[c.dataIndex]; return `${r.docs} док., ${r.findings} замеч.`; }},
+    onClick: r => { if (r.key) setFilter('doc_type', r.key); }});
+  hbar('depts', d.by_department.map(r => ({...r, n: r.density || 0})), {series: 'На 10 страниц', head: ['Отдел', 'Документов', 'Замечаний', 'На 10 страниц'],
+    rows: d.by_department.map(r => [r.label, r.docs, r.findings, r.density]), fmt: v => nf(v, 2),
+    tooltip: {afterLabel: c => { const r = d.by_department[c.dataIndex]; return `${r.docs} док., ${r.findings} замеч.`; }},
+    onClick: r => { if (r.key) setFilter('department', r.key); }});
+}
+
+function renderRecs(recs) {
+  const ICON = {critical: ['!', '#d03b3b', 'важно'], warning: ['▲', '#c47a00', 'внимание'], info: ['i', '#2a78d6', 'совет']};
+  const html = recs.length ? '<div class="recs">' + recs.map((r, i) => {
+    const [ic, col, lab] = ICON[r.level];
+    const a = r.action || {};
+    const allowed = a.type === 'link' || (a.type === 'setting' ? ROLE === 'admin' : ROLE !== 'author');
+    const btn = !allowed ? '<span class="muted small" title="Действие доступно корректору или администратору">нет прав</span>' : a.type === 'link' ? `<a class="btn small ghost" href="${esc(a.href)}">${esc(a.label)}</a>`
+      : `<button type="button" class="btn small" data-rec="${i}">${esc(a.label)}</button>`;
+    return `<div class="rec" style="--c:${col}"><span class="rec-ic" title="${lab}">${ic}</span><div><b>${esc(r.title)}</b>`
+      + `<div class="muted small">${esc(r.text)}</div></div><div class="nowrap">${a.label ? btn : ''}</div></div>`;
+  }).join('') + '</div>' : '<p class="muted">✓ Рекомендаций нет: цели выполняются, правила работают точно.</p>';
+  setHtml('recs', html, ['Важность', 'Что', 'Подробности'], recs.map(r => [r.level, r.title, r.text]));
+  if (!recs.length) { $('#c-recs .ch-table').hidden = false; $('#c-recs .ch-empty').hidden = true; }
+  $$('#c-recs [data-rec]').forEach(b => b.onclick = async () => {
+    const r = recs[b.dataset.rec], a = r.action;
+    if (!confirm(r.title + '\n\n' + a.label + '?')) return;
+    try {
+      if (a.type === 'setting') await postJson('/settings/apply', {key: a.key, value: a.value});
+      else if (a.type === 'whitelist') await postJson('/api/analytics/whitelist', {words: a.words});
+      else if (a.type === 'glossary') await postJson('/api/analytics/glossary', {good: a.good, bad: a.bad});
+      b.textContent = 'Сделано ✓'; b.disabled = true;
+    } catch (e) { alert('Не выполнено: ' + e.message); }
+  });
+}
+
+function renderAuthors(rows, goals) {
+  const max = Math.max(1, ...rows.map(r => r.density || 0), goals.density || 0);
+  const gx = goals.density ? Math.round(160 * goals.density / max) : null;
+  const html = rows.length ? '<div class="tscroll"><table class="t compact"><thead><tr><th>Автор</th><th>Документов</th><th>Страниц</th>'
+    + '<th>Замечаний</th><th>На 10 страниц</th><th>Точность</th><th>«Автору»</th><th>25/25</th></tr></thead><tbody>'
+    + rows.map(r => {
+      const over = goals.density && r.density > goals.density;
+      return `<tr><td>${r.key ? `<a href="#" data-author="${esc(r.key)}">${esc(r.label)}</a>` : `<span class="muted">${esc(r.label)}</span>`}</td>`
+        + `<td>${r.docs}</td><td>${r.pages}</td><td>${r.findings}</td>`
+        + `<td class="nowrap"><span class="gbar"><span class="ibar" style="width:${Math.round(160 * (r.density || 0) / max)}px"></span>`
+        + (gx ? `<i style="left:${gx}px" title="цель ${nf(goals.density)}"></i>` : '') + `</span> ${nf(r.density, 2)}`
+        + (over ? ' <span class="delta bad">!</span>' : '') + '</td>'
+        + `<td>${r.precision === null ? '—' : nf(r.precision) + ' %'}</td><td>${nf(r.author_share)} %</td><td>${nf(r.verify_rate)} %</td></tr>`;
+    }).join('') + '</tbody></table></div>'
+    + (gx ? '<div class="muted small" style="margin-top:6px">Красная риска — цель по плотности ошибок; «!» — цель не выполнена.</div>' : '')
+    : '<p class="muted">Авторы не указаны. Поле «Автор документа» заполняется при загрузке; сделать его обязательным можно в настройках «Цели качества и загрузка».</p>';
+  setHtml('authors', html, ['Автор', 'Документов', 'Страниц', 'Замечаний', 'На 10 страниц', 'Точность, %', '«Автору», %', '25/25, %'],
+    rows.map(r => [r.label, r.docs, r.pages, r.findings, r.density, r.precision, r.author_share, r.verify_rate]));
+  if (!rows.length) { $('#c-authors .ch-table').hidden = false; $('#c-authors .ch-empty').hidden = true; }
+  $$('#c-authors [data-author]').forEach(a => a.onclick = e => { e.preventDefault(); setFilter('author', a.dataset.author); });
 }
 
 function renderHeat(h) {
@@ -686,13 +769,14 @@ function renderTrends(t) {
     {label: 'Линейный тренд', data: pad(t.density_trend), color: TREND, borderWidth: 1.5, pointRadius: 0},
     {label: 'Прогноз', data: fc.concat(t.density_forecast), color: TREND, borderDash: [6, 5], borderWidth: 1.5, pointRadius: 3, pointStyle: 'circle'},
   ], {yTitle: 'замечаний на 10 стр.'});
+  if (t.goals.density) { CH['t-density'].chart.options.plugins.refLine = {lines: [{value: t.goals.density, label: 'цель ' + nf(t.goals.density, 1), color: '#d03b3b', width: 1.5}]}; CH['t-density'].chart.update('none'); }
   vbar('t-docs', L, s.docs, {series: 'Документов', labels: L.length <= 16});
   vbar('t-pages', L, s.pages, {series: 'Страниц', labels: L.length <= 16});
   renderTypes();
   stacked('t-sources', L, t.by_source, k => srcColor(Object.keys(SRC_COLOR).find(x => LABELS.source[x] === k)) , {});
-  line('t-author', L, [{label: 'Доля «автору»', data: s.author_share, color: PAL[0]}], {unit: ' %', max: 100});
-  line('t-precision', L, [{label: 'Точность', data: s.precision, color: PAL[0]}], {unit: ' %', max: 100});
-  line('t-verify', L, [{label: 'Прошли 25/25', data: s.verify_rate, color: PAL[0]}], {unit: ' %', max: 100});
+  line('t-author', L, [{label: 'Доля «автору»', data: s.author_share, color: PAL[0]}], {unit: ' %', max: 100, goal: t.goals.author_share});
+  line('t-precision', L, [{label: 'Точность', data: s.precision, color: PAL[0]}], {unit: ' %', max: 100, goal: t.goals.precision});
+  line('t-verify', L, [{label: 'Прошли 25/25', data: s.verify_rate, color: PAL[0]}], {unit: ' %', max: 100, goal: t.goals.verify_rate});
   line('t-duration', L, [{label: 'Секунд на документ', data: s.avg_duration, color: PAL[0]}], {unit: ' с'});
   renderRuleTrends(t);
   renderNew(t);
@@ -756,7 +840,8 @@ function renderFamilies(t) {
   }
   const html = '<div class="tscroll"><table class="t compact"><thead><tr><th>Семейство</th><th>Версий</th><th>Первая</th><th>Последняя</th><th>Изменение</th><th>Версии</th></tr></thead><tbody>'
     + t.families.map(f => `<tr><td>${esc(f.family)}</td><td>${f.versions.length}</td><td>${nf(f.first, 2)}</td><td>${nf(f.last, 2)}</td><td>${deltaCell(f.change_pct, true)}</td>`
-      + `<td>${f.versions.map((v, i) => `<a href="/job/${v.id}" title="${esc(v.name)} · ${v.created}">${i + 1}</a>`).join(' → ')}</td></tr>`).join('')
+      + `<td>${f.versions.map((v, i) => `<a href="/job/${v.id}" title="${esc(v.name)} · ${v.created}">${i + 1}</a>`).join(' → ')}`
+      + ` <a class="small" href="/compare?a=${f.versions[0].id}&b=${f.versions[f.versions.length - 1].id}" title="Что исправлено между первой и последней версией">сравнить</a></td></tr>`).join('')
     + '</tbody></table></div>';
   setHtml('t-famtab', html, ['Семейство', 'Версий', 'Первая, на 10 стр.', 'Последняя, на 10 стр.', 'Изменение, %'],
     t.families.map(f => [f.family, f.versions.length, f.first, f.last, f.change_pct]));

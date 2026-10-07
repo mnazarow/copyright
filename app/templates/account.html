@@ -1,0 +1,42 @@
+{% extends "base.html" %}{% block title %}Профиль{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Профиль</h1>
+  {% if saved %}<div class="notice ok">Сохранено.</div>{% endif %}
+  {% if error %}<div class="notice warn">{{ error }}</div>{% endif %}
+  <div class="grid g2" style="align-items:start">
+    <div class="card"><h3>{{ user.name or user.login }}</h3>
+      <p>Логин: <b>{{ user.login }}</b><br>Роль: <b>{{ ROLES.get(user.role, user.role) }}</b><br>
+      Вход: {{ {'local': 'логин и пароль Корректора', 'ldap': 'доменная учетная запись (LDAP)', 'oidc': 'единый вход (OpenID Connect)', 'env': 'встроенный администратор', 'token': 'токен API'}.get(user.source, user.source) }}<br>
+      Загружено документов: <a href="/analytics?q=">{{ mine }}</a></p>
+      {% if user.source in ('local', 'ldap', 'oidc') %}
+      <form method="post" action="/account/profile">
+        <label class="f">Имя (ФИО)</label><input type="text" name="name" value="{{ user.name }}">
+        <label class="f">Почта — сюда придет письмо, когда ваш отчет будет готов</label><input type="text" name="email" value="{{ user.email }}">
+        <label class="f">Отдел{% if st.department_scope %} — назначает администратор (включено разделение по отделам){% endif %}</label><input type="text" name="department" value="{{ user.department }}" list="deps"{% if st.department_scope %} readonly{% endif %}>
+        <datalist id="deps">{% for d in (st.departments or '').splitlines() if d.strip() %}<option value="{{ d.strip() }}">{% endfor %}</datalist>
+        <p><button class="btn">Сохранить</button></p></form>{% endif %}
+    </div>
+    {% if totp_ok %}<div class="card"><h3>Двухфакторный вход {% if totp_on %}<span class="badge ok">включен</span>{% else %}<span class="badge grey">выключен</span>{% endif %}</h3>
+      {% if totp_on %}<p>При входе, кроме пароля, запрашивается код из приложения. Резервных кодов осталось: <b>{{ totp_left }}</b>{% if totp_left < 3 %} — <span class="bad-t">мало; отключите и подключите второй фактор заново, чтобы получить новые</span>{% endif %}.</p>
+        {% if not totp_req %}<form method="post" action="/account/2fa/disable" class="filters">
+          <input type="text" name="code" placeholder="код из приложения" inputmode="numeric" maxlength="12">
+          <button class="btn ghost small danger">Отключить</button></form>
+        {% else %}<p class="muted small">Для вашей роли второй фактор обязателен.</p>{% endif %}
+      {% else %}<p>Защитите учетную запись: кроме пароля, при входе понадобится шестизначный код из приложения на телефоне.
+        {% if totp_req %}<b>Для вашей роли это обязательно.</b>{% endif %}</p>
+        <p><a class="btn" href="/account/2fa">Подключить</a></p>{% endif %}
+    </div>{% endif %}
+    <div class="card"><h3>Смена пароля</h3>
+      {% if user.source == 'local' %}
+      <form method="post" action="/account/password">
+        <label class="f">Текущий пароль</label><input type="password" name="old" autocomplete="current-password">
+        <label class="f">Новый пароль (от 8 символов, буквы и цифры)</label><input type="password" name="new" autocomplete="new-password">
+        <label class="f">Повторите новый пароль</label><input type="password" name="new2" autocomplete="new-password">
+        <p><button class="btn">Сменить пароль</button></p></form>
+      {% elif user.source in ('ldap', 'oidc') %}<p class="muted">Пароль доменной учетной записи меняется в домене (Ctrl+Alt+Del → «Изменить пароль» на рабочем компьютере).</p>
+      {% else %}<p class="muted">Пароль встроенного администратора меняется на сервере командой <code>sudo korrektor passwd</code>.</p>{% endif %}
+    </div>
+  </div>
+</div></section>
+{% endblock %}

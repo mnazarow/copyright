@@ -1,0 +1,68 @@
+{% extends "base.html" %}{% block title %}Сравнение версий{% endblock %}
+{% macro opt(j, sel) %}<option value="{{ j.id }}" {{ 'selected' if j.id == sel }}>№ {{ j.id }} · {{ j.name }} · {{ j.created[:10] }}</option>{% endmacro %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Сравнение версий</h1>
+  <p class="muted" style="margin-top:-6px;max-width:860px">Какие замечания старой версии исправлены в новой, какие остались и какие ошибки
+  появились. Замечание считается исправленным, если в новой версии его нет и ошибочного фрагмента больше нет в тексте.
+  Отклоненные корректором замечания не учитываются.</p>
+  <form class="afilters" method="get" style="position:static">
+    <label class="muted">Было</label>
+    <select name="a" style="max-width:420px"><option value="">— выберите —</option>
+      {% if same %}<optgroup label="Версии этого документа">{% for j in same %}{{ opt(j, a) }}{% endfor %}</optgroup>{% endif %}
+      {% if pivot %}<optgroup label="Текущее">{{ opt(pivot, a) }}</optgroup>{% endif %}
+      <optgroup label="Другие документы">{% for j in other %}{{ opt(j, a) }}{% endfor %}</optgroup></select>
+    <label class="muted">Стало</label>
+    <select name="b" style="max-width:420px"><option value="">— выберите —</option>
+      {% if pivot %}<optgroup label="Текущее">{{ opt(pivot, b) }}</optgroup>{% endif %}
+      {% if same %}<optgroup label="Версии этого документа">{% for j in same %}{{ opt(j, b) }}{% endfor %}</optgroup>{% endif %}
+      <optgroup label="Другие документы">{% for j in other %}{{ opt(j, b) }}{% endfor %}</optgroup></select>
+    <button class="btn small">Сравнить</button>
+    {% if res %}<a class="btn small ghost" href="/compare/export?a={{ a }}&b={{ b }}">CSV</a>{% endif %}
+  </form>
+  {% if not res %}
+    <div class="notice info">{% if a and b and a == b %}Выберите два разных задания.{% elif a or b %}Выберите обе версии. Оба задания должны быть в статусе «Готово».{% else %}Выберите старую и новую версию документа. Удобнее всего открыть сравнение кнопкой «Сравнить версии» на странице задания — предыдущая версия подставится сама.{% endif %}</div>
+  {% else %}
+  {% if not res.same_family %}<div class="notice warn">Названия документов различаются — возможно, это разные документы. Сравнение все равно выполнено.</div>{% endif %}
+  <div class="akpis">
+    <div class="akpi"><b>{{ res.fixed|length }}</b><span>исправлено{% if res.fixed_pct is not none %} · {{ res.fixed_pct }} %{% endif %}</span><i><span class="delta good">✓ ошибок больше нет</span></i></div>
+    <div class="akpi"><b>{{ res.remain|length }}</b><span>осталось</span><i class="muted">есть в обеих версиях</i></div>
+    <div class="akpi"><b>{{ res.new|length }}</b><span>новых</span><i>{% if res.new %}<span class="delta bad">! появились в новой версии</span>{% else %}<span class="delta good">✓ нет</span>{% endif %}</i></div>
+    <div class="akpi"><b>{{ res.a.density }} → {{ res.b.density }}</b><span>на 10 страниц</span>
+      <i>{% if res.density_change is not none %}<span class="delta {{ 'good' if res.density_change < 0 else 'bad' if res.density_change > 0 else '' }}">{{ '▼' if res.density_change < 0 else '▲' if res.density_change > 0 else '=' }} {{ res.density_change }} %</span>{% endif %}</i></div>
+    <div class="akpi"><b>{{ res.changed_pages|length }}</b><span>страниц изменено</span><i class="muted">{{ res.a.pages }} → {{ res.b.pages }} стр.</i></div>
+  </div>
+  <div class="grid g2" style="margin:12px 0 20px">
+    <div class="card"><b>Было:</b> <a href="/job/{{ res.a.id }}">№ {{ res.a.id }} · {{ res.a.name }}</a> <span class="muted">{{ res.a.created[:10] }} · {{ res.a.count }} замеч.</span></div>
+    <div class="card"><b>Стало:</b> <a href="/job/{{ res.b.id }}">№ {{ res.b.id }} · {{ res.b.name }}</a> <span class="muted">{{ res.b.created[:10] }} · {{ res.b.count }} замеч.</span></div>
+  </div>
+  {% if res.changed_pages %}<p class="muted">Изменены страницы: {% for p in res.changed_pages[:60] %}<span title="сходство текста {{ p.similarity }} %">{{ p.page }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if res.changed_pages|length > 60 %} …{% endif %}</p>{% endif %}
+
+  {% if res.changed_pages %}
+  <div class="card" style="margin-bottom:16px"><h3>Изменения на страницах</h3>
+    <p class="muted">Слева старая версия (красным — удаленный текст), справа новая (зеленым — добавленный). Показано до 12 страниц;
+    выберите страницу: {% for pg in res.changed_pages[:60] %}<a href="{{ '#vd-' ~ pg.page if loop.index <= 12 else '/compare/page.png?a=' ~ res.a.id ~ '&b=' ~ res.b.id ~ '&p=' ~ pg.page ~ '&side=b' }}" {{ 'target=_blank' if loop.index > 12 }}>{{ pg.page }}</a>{{ ' · ' if not loop.last }}{% endfor %}</p>
+    {% for pg in res.changed_pages[:12] %}
+    <div class="vdiff" id="vd-{{ pg.page }}"><div class="muted small">стр. {{ pg.page }} · сходство текста {{ pg.similarity }} %</div>
+      <div class="grid g2">
+        <a href="/compare/page.png?a={{ res.a.id }}&b={{ res.b.id }}&p={{ pg.page }}&side=a" target="_blank"><img loading="lazy" alt="было, стр. {{ pg.page }}" src="/compare/page.png?a={{ res.a.id }}&b={{ res.b.id }}&p={{ pg.page }}&side=a"></a>
+        <a href="/compare/page.png?a={{ res.a.id }}&b={{ res.b.id }}&p={{ pg.page }}&side=b" target="_blank"><img loading="lazy" alt="стало, стр. {{ pg.page }}" src="/compare/page.png?a={{ res.a.id }}&b={{ res.b.id }}&p={{ pg.page }}&side=b"></a>
+      </div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% macro rows(items, kind) %}
+  <table class="t compact"><tr><th>Стр.</th><th>Тип</th><th>Ошибка</th><th>Как правильно</th><th>Пояснение</th></tr>
+  {% for r in items %}{% set f = r.old if r.old is defined else r %}
+  <tr><td class="nowrap">{% if kind == 'remain' %}{{ f.page }} → {{ r.new.page }}{% else %}{{ f.page }}{% endif %}</td><td class="nowrap">{{ f.type }}</td>
+    <td class="bad-t">{{ f.bad }}</td><td class="good-t">{{ f.good }}</td><td class="small">{{ f.note }}</td></tr>{% endfor %}
+  </table>{% endmacro %}
+  <div class="card" style="margin-bottom:16px"><h3>✓ Исправлено ({{ res.fixed|length }})</h3>{% if res.fixed %}{{ rows(res.fixed, 'fixed') }}{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+  <div class="card" style="margin-bottom:16px"><h3>○ Осталось ({{ res.remain|length }})</h3>{% if res.remain %}{{ rows(res.remain, 'remain') }}{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+  <div class="card" style="margin-bottom:16px"><h3>! Новые ошибки ({{ res.new|length }})</h3>{% if res.new %}{{ rows(res.new, 'new') }}{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+  {% if res.hidden %}<div class="card"><h3>Нет в отчете, но фрагмент остался в тексте ({{ res.hidden|length }})</h3>
+    <p class="muted">Правило отключено, замечание отклонено или проверка шла с другими настройками. Проверьте эти места вручную.</p>{{ rows(res.hidden, 'hidden') }}</div>{% endif %}
+  {% endif %}
+</div></section>
+{% endblock %}

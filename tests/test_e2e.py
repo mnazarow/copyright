@@ -112,7 +112,7 @@ def test_csrf_and_token(client):
     with TestClient(app) as anon:
         assert anon.get("/api/jobs", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
         r = anon.get("/settings/export?secrets_too=1", headers={"Authorization": f"Bearer {tok}"}, follow_redirects=False)
-        assert r.status_code == 303                       # токен API не открывает настройки
+        assert r.status_code in (303, 403)                # токен API не открывает настройки
 
 
 def test_upload_limits(client):

@@ -16,7 +16,7 @@ from . import core
 from .pipeline.common import AUTHOR, TYPES
 from .pipeline.exports import safe
 
-STATS_VERSION = 3
+STATS_VERSION = 5
 
 # правило → (название, источник, ключ настройки)
 RULES = {
@@ -67,7 +67,48 @@ SOURCES = {
 STATUS = {"accepted": "Принято", "rejected": "Отклонено", "new": "Не просмотрено"}
 PREFLIGHT = [("fonts", "Шрифты не встроены"), ("low_dpi", "Изображения ниже порога dpi"),
              ("scans", "Страницы без текстового слоя"), ("placeholders", "Серые заглушки"),
-             ("empty", "Пустые страницы"), ("sizes", "Разные форматы страниц")]
+             ("empty", "Пустые страницы"), ("sizes", "Разные форматы страниц"),
+             ("style", "Нарушения стандарта оформления"), ("products", "Расхождения со справочником продукции")]
+
+
+_learn_cache = {}
+DECISION_EPOCH = [0]          # увеличивается при каждом решении корректора (✓ ✕, массовая отметка, удаление задания)
+
+
+def decisions_changed():
+    DECISION_EPOCH[0] += 1
+
+
+def learn_key(rule, bad):
+    """Ключ «правило + фрагмент»: фрагмент обрезается так же, как в сводках (80 символов)."""
+    from .pipeline.common import norm
+    return (rule or "", norm((bad or "")[:80]).lower())
+
+
+def learned_rejections(threshold, exclude_job=None):
+    """Пары (правило, фрагмент), отклоненные корректором не меньше чем в threshold разных документах и ни разу не
+    принятые. Замечания, скрытые автоматически, не учитываются (иначе правило само себя усиливало бы).
+    Результат кешируется до следующего решения корректора."""
+    with core.db() as c:
+        done = c.execute("SELECT COUNT(*) FROM jobs WHERE status='done'").fetchone()[0]
+    ck = (DECISION_EPOCH[0], threshold, done)
+    if ck in _learn_cache:
+        res = _learn_cache[ck]
+    else:
+        acc, rej = collections.Counter(), collections.defaultdict(set)
+        for s in all_stats():
+            for x in s["findings"]:
+                if x.get("auto"):
+                    continue
+                k = learn_key(x["rule"], x["bad"])
+                if x["status"] == "accepted":
+                    acc[k] += 1
+                elif x["status"] == "rejected":
+                    rej[k].add(s["id"])
+        res = {k: docs for k, docs in rej.items() if len(docs) >= threshold and not acc.get(k) and k[1]}
+        _learn_cache.clear()
+        _learn_cache[ck] = res
+    return {k: len(docs - {exclude_job}) for k, docs in res.items() if len(docs - {exclude_job}) >= threshold}
 
 
 def rule_info(rule):
@@ -94,6 +135,7 @@ def _stats_from_state(state):
             "id": f.get("id"), "page": int(f.get("page") or 1), "type": f.get("type", ""), "rule": ri["rule"],
             "source": ri["source"], "status": f.get("status", "new"), "systemic": int(f.get("systemic") or 0),
             "bad": (f.get("bad") or "")[:80], "good": (f.get("good") or "")[:80], "edited": bool(f.get("edited")),
+            "auto": f.get("auto") or "",
         })
     v = state.get("verify") or {}
     pf = state.get("preflight") or {}
@@ -104,6 +146,8 @@ def _stats_from_state(state):
         "placeholders": len(pf.get("placeholders") or []),
         "empty": len(pf.get("empty") or []),
         "sizes": 1 if len(pf.get("page_sizes") or {}) > 1 else 0,
+        "style": len((state.get("style") or {}).get("issues") or []) if (state.get("style") or {}).get("configured") else 0,
+        "products": len((state.get("products") or {}).get("issues") or []),
     }
     return {
         "_v": STATS_VERSION, "pages": pages, "findings": findings,
@@ -158,6 +202,8 @@ def job_stats(job):
             st["stages"] = json.load(open(tp, encoding="utf-8"))
         except Exception:  # noqa
             pass
+    st.update(author=job.get("author") or "", department=job.get("department") or "", owner=job.get("owner") or "",
+              doc_type=job.get("doc_type") or "")
     st.update(id=job["id"], name=job["name"], batch=job.get("batch") or "", created=created, duration=dur,
               family=family_of(job["name"]))
     return st
@@ -173,9 +219,9 @@ def all_stats():
     return out
 
 
-def failed_jobs(date_from=None, date_to=None):
+def failed_jobs(date_from=None, date_to=None, owner=None):
     n = 0
-    for j in core.list_jobs(100000):
+    for j in core.list_jobs(100000, owner=owner):
         if j["status"] == "failed" and _in_range(j.get("created", ""), date_from, date_to):
             n += 1
     return n
@@ -214,8 +260,16 @@ def parse_filters(q):
         "period": period, "from": df, "to": dt_, "q": (q.get("q") or "").strip().lower(),
         "batch": q.get("batch") or "", "family": q.get("family") or "", "job": q.get("job") or "",
         "type": q.get("type") or "", "source": q.get("source") or "", "status": q.get("status") or "",
-        "rule": q.get("rule") or "",
+        "rule": q.get("rule") or "", "author": q.get("author") or "", "department": q.get("department") or "",
+        "owner": q.get("owner"), "doc_type": q.get("doc_type") or "",
     }
+
+
+def _visible(scope, s):
+    """scope — логин (str) или users.Scope."""
+    if isinstance(scope, str):
+        return s.get("owner") == scope
+    return scope.ok(s.get("owner"), s.get("department"))
 
 
 def filter_docs(stats, f):
@@ -228,6 +282,14 @@ def filter_docs(stats, f):
         if f["batch"] and s["batch"] != f["batch"]:
             continue
         if f["family"] and s["family"] != f["family"]:
+            continue
+        if f.get("owner") is not None and not _visible(f["owner"], s):
+            continue
+        if f.get("doc_type") and s.get("doc_type") != f["doc_type"]:
+            continue
+        if f.get("author") and s.get("author") != f["author"]:
+            continue
+        if f.get("department") and s.get("department") != f["department"]:
             continue
         if f["job"] and str(s["id"]) != str(f["job"]):
             continue
@@ -257,7 +319,8 @@ def metrics(docs, f=None):
     n = len(fs)
     occ = sum(max(1, x["systemic"]) for x in fs)
     acc = sum(1 for x in fs if x["status"] == "accepted")
-    rej = sum(1 for x in fs if x["status"] == "rejected")
+    rej = sum(1 for x in fs if x["status"] == "rejected" and not x.get("auto"))
+    auto = sum(1 for x in fs if x.get("auto"))
     durs = [s["duration"] for s in docs if s["duration"] is not None]
     return {
         "docs": len(docs), "pages": pages, "findings": n, "occurrences": occ,
@@ -265,7 +328,7 @@ def metrics(docs, f=None):
         "per_doc": _r(n / len(docs), 1) if docs else None,
         "author_share": _pct(sum(1 for x in fs if x["type"] == AUTHOR), n),
         "ai_share": _pct(sum(1 for x in fs if x["source"] == "ai"), n),
-        "accepted": acc, "rejected": rej, "new": n - acc - rej,
+        "accepted": acc, "rejected": rej, "new": n - acc - rej - auto, "auto_hidden": auto,
         "precision": _pct(acc, acc + rej),
         "reviewed_share": _pct(acc + rej, n),
         "edited": sum(1 for x in fs if x.get("edited")),
@@ -284,7 +347,7 @@ def analytics(q):
     docs = filter_docs(stats, f)
     fs = [(s, x) for s in docs for x in s["findings"] if finding_ok(x, f)]
     m = metrics(docs, f)
-    m["failed"] = failed_jobs(f["from"], f["to"])
+    m["failed"] = failed_jobs(f["from"], f["to"], f.get("owner"))
 
     by_type = collections.Counter(x["type"] for _, x in fs)
     by_source = collections.Counter(x["source"] for _, x in fs)
@@ -294,7 +357,7 @@ def analytics(q):
     rules = collections.defaultdict(lambda: {"accepted": 0, "rejected": 0, "new": 0, "docs": set()})
     for s, x in fs:
         r = rules[x["rule"]]
-        r[x["status"] if x["status"] in ("accepted", "rejected") else "new"] += 1
+        r[x["status"] if x["status"] in ("accepted", "rejected") and not x.get("auto") else "new"] += 1
         r["docs"].add(s["id"])
     rule_rows = []
     for rule, r in rules.items():
@@ -393,9 +456,9 @@ def analytics(q):
     # страницы с наибольшим числом замечаний
     pages_top = collections.Counter((s["id"], s["name"], x["page"]) for s, x in fs).most_common(15)
 
-    return {
-        "filters": {k: (v.isoformat() if isinstance(v, dt.date) else v) for k, v in f.items()},
-        "options": options(stats),
+    res = {
+        "filters": {k: (v.isoformat() if isinstance(v, dt.date) else v) for k, v in f.items() if k != "owner"},
+        "options": options([s for s in stats if f.get("owner") is None or _visible(f["owner"], s)]),
         "kpi": m,
         "by_type": [{"key": t, "label": t, "n": by_type.get(t, 0)} for t in TYPES],
         "by_source": [{"key": k, "label": SOURCES[k], "n": n} for k, n in by_source.most_common()],
@@ -415,7 +478,145 @@ def analytics(q):
         "unknown": unknown,
         "systemic": systemic,
         "pages_top": [{"id": i, "name": nm, "page": p, "n": n} for (i, nm, p), n in pages_top],
+        "by_author": group_by(docs, f, "author"),
+        "by_department": group_by(docs, f, "department"),
+        "by_doc_type": group_by(docs, f, "doc_type"),
+        "goals": goals(),
     }
+    g = res["goals"]
+    st_ = core.load_settings()
+    by_id = {s["id"]: s for s in docs}
+    m["over_goal"] = 0
+    for r in dens:
+        gl = density_goal(by_id[r["id"]].get("doc_type"), st_)
+        r["goal"] = gl
+        if gl and (r["density"] or 0) > gl:
+            m["over_goal"] += 1
+    res["goal_state"] = {k: goal_state(k, m.get(k), g) for k in g}
+    res["recommendations"] = recommendations(res, core.load_settings())
+    return res
+
+
+def plural(n, one, few, many):
+    n10, n100 = n % 10, n % 100
+    w = one if n10 == 1 and n100 != 11 else few if 2 <= n10 <= 4 and not 12 <= n100 <= 14 else many
+    return f"{n} {w}"
+
+
+def recommendations(d, st):
+    """Подсказки «что сделать», собранные из показателей. Каждая — с действием, выполняемым одним нажатием."""
+    out = []
+    k, g = d["kpi"], d["goals"]
+    wl = {w.lower() for w in (st.get("whitelist") or "").split()}
+    # 1. правила, которые чаще ошибаются, чем помогают
+    for r in d["rules"]:
+        dec = r["accepted"] + r["rejected"]
+        if dec >= 10 and r["precision"] is not None and r["precision"] < 50 and r["setting"]:
+            sch = core.SCHEMA.get(r["setting"], {})
+            act = {"type": "setting", "key": r["setting"], "value": False, "label": "Выключить правило"} \
+                if sch.get("type") == "bool" and st.get(r["setting"]) else {"type": "link", "href": f"/settings#set-{r['setting']}", "label": "Открыть настройку"}
+            out.append({"level": "warning", "title": f"Правило «{r['label']}» чаще ошибается, чем помогает",
+                        "text": f"Точность {r['precision']} %: принято {r['accepted']}, отклонено {r['rejected']}. "
+                                "Смягчите или отключите правило.", "action": act})
+    # 2. слова, которые корректор отклоняет — кандидаты в белый список
+    words = [u["word"] for u in d["unknown"] if u["rejected"] >= 2 and not u["accepted"] and not u["whitelisted"]
+             and u["word"].lower() not in wl][:20]
+    if words:
+        out.append({"level": "info", "title": f"{plural(len(words), 'слово', 'слова', 'слов')} корректор отклоняет как «вне словаря» — "
+                    "вероятно, это не ошибки",
+                    "text": ", ".join(words), "action": {"type": "whitelist", "words": words, "label": "Добавить в белый список"}})
+    # 3. повторяющиеся ошибки в терминах — в глоссарий
+    gl = (st.get("glossary") or "").lower()
+    term = re.compile(r"^[^\W\d_][\w\- ]*$")
+    pairs = [r for r in d["recurring"] if r["docs"] >= 3 and r["good"] and r["rule"] in ("ai", "lt")
+             and r["type"] in ("Орфография", "Единообразие", "Грамматика") and r["bad"].lower() not in gl
+             and term.match(r["good"]) and term.match(r["bad"]) and r["good"].lower() != r["bad"].lower()
+             and len(r["good"].split()) == len(r["bad"].split())][:5]
+    for r in pairs:
+        out.append({"level": "info", "title": f"«{r['bad']}» → «{r['good']}» встречается в {r['docs']} документах",
+                    "text": "Добавьте пару в глоссарий: ошибка будет находиться всегда, даже без языковой модели.",
+                    "action": {"type": "glossary", "good": r["good"], "bad": r["bad"], "label": "В глоссарий"}})
+    # 4. цели
+    if goal_state("density", k["density"], g) == "bad":
+        out.append({"level": "critical", "title": f"Плотность ошибок {k['density']} выше цели {g['density']}",
+                    "text": f"Документов с превышением: {k.get('over_goal', 0)}. Самые проблемные — в графике «Плотность ошибок по документам».",
+                    "action": {"type": "link", "href": "#c-density", "label": "Показать документы"}})
+    if goal_state("author_share", k["author_share"], g) == "bad":
+        out.append({"level": "warning", "title": f"Доля «Требует проверки автором» {k['author_share']} % выше цели {g['author_share']} %",
+                    "text": "Пополните белый список и глоссарий; при возможности подключите языковую модель.",
+                    "action": {"type": "link", "href": "#c-unknown", "label": "Слова вне словаря"}})
+    if goal_state("precision", k["precision"], g) == "bad" and (k["accepted"] + k["rejected"]) >= 20:
+        out.append({"level": "warning", "title": f"Точность замечаний {k['precision']} % ниже цели {g['precision']} %",
+                    "text": "Посмотрите «Точность правил»: правила с пометкой ⚠ дают больше всего ложных срабатываний.",
+                    "action": {"type": "link", "href": "#c-ruletab", "label": "Точность правил"}})
+    if goal_state("verify_rate", k["verify_rate"], g) == "bad":
+        out.append({"level": "critical", "title": f"Только {k['verify_rate']} % отчетов прошли 25 проверок",
+                    "text": "Непринятые отчеты не выдаются. Откройте документы с непройденной проверкой и поправьте замечания.",
+                    "action": {"type": "link", "href": "#c-verify", "label": "Машинная проверка"}})
+    # 5. прочее
+    if k["findings"] >= 50 and (k["reviewed_share"] or 0) < 20:
+        out.append({"level": "info", "title": f"Корректор отметил только {k['reviewed_share'] or 0} % замечаний",
+                    "text": "Без отметок ✓ и ✕ точность правил считается по малой выборке. Отмечайте замечания массово в обозревателе.",
+                    "action": {"type": "link", "href": "#explorer", "label": "Обозреватель"}})
+    if (k["ai_share"] or 0) == 0 and (k["author_share"] or 0) > 30 and st.get("ai_provider") in (None, "", "none"):
+        out.append({"level": "info", "title": "Языковая модель не подключена",
+                    "text": "Без нее не находятся смысловые, грамматические и логические ошибки; много мест уходит автору.",
+                    "action": {"type": "link", "href": "/settings#ai", "label": "Подключить"}})
+    if k.get("failed"):
+        out.append({"level": "warning", "title": f"Заданий с ошибкой: {k['failed']}",
+                    "text": "Проверка не выполнена — откройте задание и посмотрите журнал.",
+                    "action": {"type": "link", "href": "/jobs", "label": "Задания"}})
+    rank = {"critical": 0, "warning": 1, "info": 2}
+    for r in out:                                      # десятичная запятая в тексте
+        r["title"] = re.sub(r"(\d)\.(\d)", r"\1,\2", r["title"])
+        r["text"] = re.sub(r"(\d)\.(\d)", r"\1,\2", r["text"])
+    return sorted(out, key=lambda r: rank[r["level"]])
+
+
+def type_goals(st=None):
+    st = st or core.load_settings()
+    out = {}
+    for ln in (st.get("goal_density_by_type") or "").splitlines():
+        if ":" in ln:
+            k, v = ln.rsplit(":", 1)
+            try:
+                out[k.strip().lower()] = float(v.strip().replace(",", "."))
+            except ValueError:
+                pass
+    return out
+
+
+def density_goal(doc_type, st=None):
+    """Цель по плотности ошибок для документа: по его типу или общая."""
+    st = st or core.load_settings()
+    return type_goals(st).get((doc_type or "").strip().lower()) or float(st.get("goal_density") or 0) or None
+
+
+def goals(st=None):
+    st = st or core.load_settings()
+    return {k: (float(st.get("goal_" + k) or 0) or None) for k in ("density", "author_share", "precision", "verify_rate")}
+
+
+def goal_state(key, value, g):
+    """'ok' | 'bad' | None — выполнена ли цель (плотность и доля «автору» — не больше, остальное — не меньше)."""
+    if value is None or not g.get(key):
+        return None
+    return "ok" if (value <= g[key] if key in ("density", "author_share") else value >= g[key]) else "bad"
+
+
+def group_by(docs, f, field):
+    """Показатели по авторам или отделам."""
+    groups = collections.defaultdict(list)
+    for s in docs:
+        groups[s.get(field) or ""].append(s)
+    out = []
+    for name, ss in groups.items():
+        m = metrics(ss, f)
+        out.append({"key": name, "label": name or "не указан", "docs": m["docs"], "pages": m["pages"],
+                    "findings": m["findings"], "density": m["density"], "precision": m["precision"],
+                    "author_share": m["author_share"], "verify_rate": m["verify_rate"]})
+    out.sort(key=lambda r: (r["key"] == "", -(r["docs"])))
+    return out
 
 
 def options(stats):
@@ -431,6 +632,9 @@ def options(stats):
         "statuses": [{"key": k, "label": v} for k, v in STATUS.items()],
         "families": [{"key": k, "n": n} for k, n in sorted(fam.items())],
         "batches": [b for b in reversed(list(batches.values())) if b["n"] > 1][:60],
+        "authors": sorted({s.get("author") for s in stats if s.get("author")}),
+        "departments": sorted({s.get("department") for s in stats if s.get("department")}),
+        "doc_types": sorted({s.get("doc_type") for s in stats if s.get("doc_type")}),
         "first": stats[0]["created"][:10] if stats else None,
         "last": stats[-1]["created"][:10] if stats else None,
     }
@@ -653,9 +857,9 @@ def trends(q):
             pass
 
     return {
-        "filters": {k: (v.isoformat() if isinstance(v, dt.date) else v) for k, v in f.items()},
+        "filters": {k: (v.isoformat() if isinstance(v, dt.date) else v) for k, v in f.items() if k != "owner"},
         "gran": gran,
-        "options": options(stats),
+        "options": options([s for s in stats if f.get("owner") is None or _visible(f["owner"], s)]),
         "labels": [bucket_label(b, gran) for b in buckets],
         "keys": [b.isoformat() for b in buckets],
         "future_labels": [bucket_label(b, gran) for b in future],
@@ -679,6 +883,7 @@ def trends(q):
         "calendar": cal,
         "weekday_hour": wh,
         "has_before": bool(before),
+        "goals": goals(),
     }
 
 
@@ -717,6 +922,15 @@ def export_rows(data):
         ("Предпечатная", ["Проблема", "Документов", "Случаев"], [[r["label"], r["docs"], r["items"]] for r in data["preflight"]]),
         ("Машинная проверка", ["Не пройдено требование", "Документов"], [[r["label"], r["n"]] for r in data["verify_fail"]]),
         ("Время обработки", ["№", "Документ", "Страниц", "Секунд"], [[r["id"], r["name"], r["x"], r["y"]] for r in data["duration"]]),
+        ("По авторам", ["Автор", "Документов", "Страниц", "Замечаний", "На 10 страниц", "Точность, %", "«Автору», %", "25/25, %"],
+         [[r["label"], r["docs"], r["pages"], r["findings"], r["density"], r["precision"], r["author_share"], r["verify_rate"]]
+          for r in data["by_author"]]),
+        ("По отделам", ["Отдел", "Документов", "Страниц", "Замечаний", "На 10 страниц", "Точность, %", "«Автору», %", "25/25, %"],
+         [[r["label"], r["docs"], r["pages"], r["findings"], r["density"], r["precision"], r["author_share"], r["verify_rate"]]
+          for r in data["by_department"]]),
+        ("Рекомендации", ["Важность", "Что", "Подробности"],
+         [[{"critical": "высокая", "warning": "средняя", "info": "низкая"}[r["level"]], r["title"], r["text"]]
+          for r in data["recommendations"]]),
     ]
     return sheets
 

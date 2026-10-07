@@ -1,0 +1,8 @@
+dist
+data
+venv
+.pytest_cache
+**/__pycache__
+*.pyc
+docs/*.pdf
+docs/*.docx

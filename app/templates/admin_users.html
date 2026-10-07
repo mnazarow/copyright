@@ -1,0 +1,59 @@
+{% extends "base.html" %}{% block title %}Пользователи{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <div class="job-head"><div><h1>Пользователи</h1>
+    <p class="muted" style="margin-top:-6px;max-width:820px">Учетные записи и роли. <b>Автор</b> загружает документы и скачивает отчеты;
+    <b>корректор</b> дополнительно принимает, отклоняет и правит замечания, пересобирает отчеты, ведет белый список и глоссарий;
+    <b>администратор</b> — все, включая настройки, пользователей и журнал. Встроенный <code>admin</code> входит паролем из
+    korrektor.env{% if st.ldap_enabled %}; сотрудники домена входят доменным паролем, учетная запись создается при первом входе{% endif %}.</p></div>
+    <div class="dl"><a class="btn ghost small" href="/admin/audit">Журнал действий</a><a class="btn ghost small" href="/settings#access">Настройки входа</a></div></div>
+  {% if saved %}<div class="notice ok">Сохранено: {{ saved }}</div>{% endif %}
+  {% if error %}<div class="notice warn">{{ error }}</div>{% endif %}
+  <div class="grid g2" style="grid-template-columns:2fr 1fr;align-items:start">
+    <div class="card" style="overflow:auto"><table class="t compact">
+      <tr><th>Логин</th><th>Имя · отдел</th><th>Роль</th><th>Вход</th><th>Заданий</th><th>Последний вход</th><th></th></tr>
+      <tr><td><b>admin</b></td><td>Администратор (встроенный)</td><td>{{ ROLES.admin }}</td><td>пароль korrektor.env{% if builtin_totp %} + код{% endif %}</td><td>{{ counts.get('admin', 0) }}</td><td>—</td><td></td></tr>
+      {% for u in rows %}
+      <tr class="{{ '' if u.active else 'rejected' }}">
+        <td><b>{{ u.login }}</b>{% if not u.active %} <span class="badge grey">отключен</span>{% endif %}</td>
+        <td>{{ u.name or '—' }}{% if u.department %}<div class="muted small">{{ u.department }}</div>{% endif %}{% if u.email %}<div class="muted small">{{ u.email }}</div>{% endif %}</td>
+        <td>{{ ROLES.get(u.role, u.role) }}</td><td>{{ {'ldap': 'LDAP', 'oidc': 'единый вход'}.get(u.source, 'пароль') }}{% if u.totp %} + код{% endif %}</td>
+        <td>{{ counts.get(u.login, 0) }}</td><td class="small">{{ (u.last_login or '—').replace('T', ' ')[:16] }}</td>
+        <td class="nowrap"><button type="button" class="btn small ghost" onclick='editUser({{ u|tojson }})'>Изменить</button>
+          {% if u.totp %}<form method="post" action="/admin/users/reset-2fa" style="display:inline" onsubmit="return confirm('Отключить второй фактор пользователя {{ u.login }}? Он войдет по паролю и подключит код заново.')">
+            <input type="hidden" name="login" value="{{ u.login }}"><button class="btn small ghost">Сбросить 2FA</button></form>{% endif %}
+          <form method="post" action="/admin/users/delete" style="display:inline" onsubmit="return confirm('Удалить пользователя {{ u.login }}? Его задания останутся.')">
+            <input type="hidden" name="login" value="{{ u.login }}"><button class="btn small danger">Удалить</button></form></td>
+      </tr>{% endfor %}
+    </table>
+    {% if not rows %}<p class="muted">Пока есть только встроенный администратор. Создайте учетные записи сотрудников справа{% if st.ldap_enabled %} или дождитесь их первого входа через LDAP{% endif %}.</p>{% endif %}
+    </div>
+    <div class="card"><h3 id="uf-title">Новый пользователь</h3>
+      <form method="post" action="/admin/users/save" id="uform">
+        <label class="f">Логин</label><input type="text" name="login" required pattern="[\w.@\-]{2,64}" autocomplete="off">
+        <label class="f">Имя (ФИО)</label><input type="text" name="name">
+        <label class="f">Роль</label><select name="role">{% for k, v in ROLES.items() %}<option value="{{ k }}" {{ 'selected' if k=='author' }}>{{ v }}</option>{% endfor %}</select>
+        <label class="f">Почта (для уведомлений)</label><input type="text" name="email">
+        <label class="f">Отдел</label><input type="text" name="department" list="deps">
+        <datalist id="deps">{% for d in (st.departments or '').splitlines() if d.strip() %}<option value="{{ d.strip() }}">{% endfor %}</datalist>
+        <label class="f">Пароль <span class="muted" id="pw-hint">(от 8 символов, буквы и цифры)</span></label>
+        <input type="password" name="password" autocomplete="new-password">
+        <label style="display:block;margin:10px 0"><input type="checkbox" name="active" value="1" checked> учетная запись активна</label>
+        <p><button class="btn">Сохранить</button> <button type="button" class="btn ghost" onclick="newUser()">Очистить</button></p>
+      </form></div>
+  </div>
+</div></section>
+{% endblock %}
+{% block scripts %}<script>
+function editUser(u) {
+  const f = document.getElementById('uform');
+  f.login.value = u.login; f.login.readOnly = true; f.name.value = u.name || ''; f.role.value = u.role;
+  f.email.value = u.email || ''; f.department.value = u.department || ''; f.active.checked = !!u.active; f.password.value = '';
+  f.password.disabled = u.source === 'ldap' || u.source === 'oidc';
+  document.getElementById('uf-title').textContent = 'Изменить: ' + u.login;
+  document.getElementById('pw-hint').textContent = u.source !== 'local' ? '(пароль хранится на сервере учетных записей)' : '(пусто — не менять)';
+  f.scrollIntoView({behavior: 'smooth'});
+}
+function newUser() { const f = document.getElementById('uform'); f.reset(); f.login.readOnly = false; f.password.disabled = false;
+  document.getElementById('uf-title').textContent = 'Новый пользователь'; document.getElementById('pw-hint').textContent = '(от 8 символов, буквы и цифры)'; }
+</script>{% endblock %}

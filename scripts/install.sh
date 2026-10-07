@@ -15,6 +15,8 @@
 #    --domain NAME         имя сайта для nginx (по умолчанию _ — любой)
 #    --with-ocr            поставить Tesseract с русским языком (распознавание сканов)
 #    --with-languagetool   поставить локальный сервер LanguageTool (нужно ~1 ГБ, Java)
+#    --with-office         поставить LibreOffice Writer: прием документов DOC, DOCX, ODT, RTF
+#    --full                все дополнения сразу: --with-ocr --with-languagetool --with-office
 #    --source URL|PATH     взять программу из архива .tar.gz, git-репозитория или папки
 #    --open-firewall       открыть порт в firewalld/ufw
 #    --yes                 не задавать вопросов
@@ -32,6 +34,7 @@ PASSWORD=""
 WITH_NGINX=0
 DOMAIN="_"
 WITH_OCR=0
+WITH_OFFICE=0
 WITH_LT=0
 SOURCE=""
 OPEN_FW=0
@@ -54,6 +57,8 @@ while [ $# -gt 0 ]; do
     --with-nginx) WITH_NGINX=1; shift;;
     --domain) DOMAIN="$2"; shift 2;;
     --with-ocr) WITH_OCR=1; shift;;
+    --with-office) WITH_OFFICE=1; shift;;
+    --full) WITH_OCR=1; WITH_LT=1; WITH_OFFICE=1; shift;;
     --with-languagetool) WITH_LT=1; shift;;
     --source) SOURCE="$2"; shift 2;;
     --open-firewall) OPEN_FW=1; shift;;
@@ -136,6 +141,18 @@ case "$PM" in
 esac
 command -v hunspell >/dev/null && ok "Hunspell установлен" || warn "Hunspell не установлен — словарная проверка будет пропускаться"
 
+if [ $WITH_OFFICE -eq 1 ]; then
+  say "LibreOffice Writer (прием документов Word) — 200–400 МБ"
+  case "$PM" in
+    apt-get) pkg_try libreoffice-writer-nogui libreoffice-writer || warn "LibreOffice не установлен";
+             pkg_try fonts-liberation fonts-dejavu-core fonts-crosextra-carlito >/dev/null || true;;
+    dnf|yum) pkg_try libreoffice-writer libreoffice-headless || warn "LibreOffice не установлен";
+             pkg_try liberation-fonts dejavu-sans-fonts >/dev/null || true;;
+    zypper)  pkg_try libreoffice-writer || warn "LibreOffice не установлен";;
+    pacman)  pkg_try libreoffice-fresh || warn "LibreOffice не установлен";;
+  esac
+  command -v soffice >/dev/null && ok "LibreOffice установлен: документы Word принимаются"
+fi
 if [ $WITH_OCR -eq 1 ]; then
   say "Tesseract OCR"
   case "$PM" in
@@ -177,7 +194,8 @@ if ! id $APP >/dev/null 2>&1; then
     || useradd -r -d $DATA -s /sbin/nologin $APP
   ok "Создан системный пользователь $APP"
 fi
-mkdir -p $PREFIX $DATA $CONF
+mkdir -p $PREFIX $DATA $CONF /var/backups/$APP
+chown root:$APP /var/backups/$APP && chmod 2770 /var/backups/$APP   # служба пишет сюда копии по расписанию
 say "Копирование программы в $PREFIX"
 copy_tree "$SRC_DIR" $PREFIX
 chown -R root:root $PREFIX
@@ -295,10 +313,23 @@ case "${1:-help}" in
              && systemctl restart $APP
            echo "Новый пароль администратора: $P";;
   password) need_root "$@"; grep '^KORREKTOR_ADMIN_PASSWORD=' $ENVF | cut -d= -f2-;;
-  backup)  need_root "$@"; mkdir -p /var/backups/korrektor; F=/var/backups/korrektor/korrektor-$(date +%Y%m%d-%H%M%S).tgz
-           tar czf "$F" -C / var/lib/korrektor etc/korrektor $( [ -f $PREFIX/app/prompts/custom_prompt.md ] && echo opt/korrektor/app/prompts/custom_prompt.md ) && echo "Резервная копия: $F";;
-  restore) need_root "$@"; [ -f "$2" ] || { echo "Укажите файл: sudo korrektor restore /var/backups/korrektor/....tgz"; exit 1; }
-           systemctl stop $APP; tar xzf "$2" -C /; chown -R $APP:$APP $DATA; systemctl start $APP; echo "Восстановлено из $2";;
+  backup)  need_root "$@"; cd $PREFIX && sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup backup;;
+  verify)  need_root "$@"; [ -f "$2" ] || { echo "Укажите файл: sudo korrektor verify /var/backups/korrektor/....tgz"; exit 1; }
+           cd $PREFIX && env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup verify "$2";;
+  restore) need_root "$@"; [ -f "$2" ] || { echo "Укажите файл: sudo korrektor restore /var/backups/korrektor/....tgz [--with-env]"; exit 1; }
+           chgrp $APP "$2" 2>/dev/null; chmod g+r "$2" 2>/dev/null   # служба читает копию от своего имени
+           cd $PREFIX && sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup verify "$(readlink -f "$2")" >/dev/null \
+             || { echo "Копия не прошла проверку: sudo korrektor verify $2"; exit 1; }
+           systemctl stop $APP
+           sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup restore "$(readlink -f "$2")"; RC=$?
+           if [ "${3:-}" = "--with-env" ]; then
+             T=$(mktemp -d); tar xzf "$2" -C "$T" etc/korrektor.env etc/korrektor/korrektor.env 2>/dev/null
+             for E in "$T/etc/korrektor.env" "$T/etc/korrektor/korrektor.env"; do [ -f "$E" ] && install -m 640 -o root -g $APP "$E" $ENVF && echo "Файл настроек службы восстановлен"; done
+             rm -rf "$T"
+           fi
+           chown -R $APP:$APP $DATA; systemctl start $APP; [ $RC -eq 0 ] && echo "Восстановлено из $2";;
+  2fa-off) need_root "$@"; [ -n "${2:-}" ] || { echo "Укажите логин: sudo korrektor 2fa-off admin"; exit 1; }
+           cd $PREFIX && sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.totp off "$2";;
   update)  need_root "$@"; shift; bash $PREFIX/scripts/update.sh "$@";;
   uninstall) need_root "$@"; shift; bash $PREFIX/scripts/uninstall.sh "$@";;
   version) cat $PREFIX/VERSION;;
@@ -312,7 +343,9 @@ case "${1:-help}" in
   sudo korrektor passwd [П]   сменить пароль администратора (без П — сгенерировать)
   sudo korrektor password     показать текущий пароль
   sudo korrektor backup       резервная копия данных и настроек в /var/backups/korrektor
-  sudo korrektor restore Ф    восстановить из резервной копии
+  sudo korrektor verify Ф     проверить целостность резервной копии
+  sudo korrektor restore Ф    восстановить из копии (--with-env — и файл настроек службы)
+  sudo korrektor 2fa-off Л     отключить двухфакторный вход пользователя Л (потерян телефон)
   sudo korrektor update [...] обновить (ключи как у update.sh)
   sudo korrektor uninstall    удалить (ключ --purge удалит и данные)
   korrektor version | url     версия и адрес сервиса

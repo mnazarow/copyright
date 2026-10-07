@@ -25,12 +25,52 @@
         </div>
       </div>
 
+      <form method="post" action="/settings/backups-upload" id="bk-upload" enctype="multipart/form-data"></form>
+      <form method="post" action="/settings/products" id="pr-upload" enctype="multipart/form-data"></form>
+      <form method="post" action="/settings/products/delete" id="pr-delete"></form>
       <form method="post" action="/settings" id="sform">
       {% for g, title, desc, items in groups %}
       <div class="group" id="{{ g }}">
         <h2>{{ title }}</h2><p>{{ desc }}</p>
         {% if g == 'ai' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-ai', this)">Проверить связь с моделью</button>
           <span class="muted"></span></p>{% endif %}
+        {% if g == 'system' %}<div class="setting"><div class="title">Резервные копии</div>
+          <div class="short">{% if bstat.last %}Последняя: {{ bstat.last.replace('T', ' ') }} ({{ bstat.reason }}), {{ (bstat.size // 1024) }} КБ — {{ bstat.file }}{% else %}Копий еще не было.{% endif %}
+          {% if bstat.error %}<br><span class="bad-t">Ошибка: {{ bstat.error }}</span>{% endif %}</div>
+          <p><button type="button" class="btn ghost small" onclick="testConn('/settings/backup-now', this)">Сделать копию сейчас</button> <span class="muted"></span></p>
+          {% if bsaved %}<p class="ok-t">Копия {{ bsaved }} загружена и проверена — ее можно восстановить ниже.</p>{% endif %}
+          {% if berror %}<p class="bad-t">Загрузка копии: {{ berror }}</p>{% endif %}
+          {% if blist %}<details{% if bsaved %} open{% endif %}><summary>Копии в папке ({{ blist|length }}) — проверить, скачать, восстановить</summary><ul class="plain bk-list">{% for b in blist %}
+            <li><a href="/settings/backups/{{ b.name }}">{{ b.name }}</a> <span class="muted small">{{ b.time.replace('T', ' ') }} · {{ (b.size // 1024) }} КБ
+              {% if b.check %}· {% if b.check.ok %}<span class="ok-t">проверена {{ b.check.time[:16].replace('T', ' ') }}</span>{% else %}<span class="bad-t">повреждена</span>{% endif %}{% endif %}</span><br>
+              <button type="button" class="btn ghost small" onclick="verifyBackup('{{ b.name }}', this)">Проверить</button>
+              <button type="button" class="btn ghost small danger" onclick="restoreBackup('{{ b.name }}', this)">Восстановить…</button>
+              <span class="muted small bk-out"></span></li>{% endfor %}</ul></details>{% endif %}
+          <details><summary>Загрузить копию с компьютера (перенос на новый сервер)</summary>
+            <p class="small muted">Архив .tgz, созданный Корректором (автоматически, кнопкой или командой <code>korrektor backup</code>). После загрузки он будет проверен и появится в списке.</p>
+            <p><input type="file" form="bk-upload" name="file" accept=".tgz,.gz,application/gzip">
+              <button class="btn ghost small" form="bk-upload">Загрузить</button></p></details>
+        </div>{% endif %}
+        {% if g == 'standard' %}<div class="setting"><div class="title">Справочник продукции</div>
+          <div class="short">{% if pref %}Загружен {{ pref.time }}: «{{ pref.file }}», позиций {{ pref.items }}{% if pref.units %}; сверяемые характеристики:
+            {% for n, u in pref.units.items() %}{{ n }} ({{ u }}){{ ', ' if not loop.last }}{% endfor %}{% else %}; колонок с единицами измерения нет — сверяются только артикулы{% endif %}.
+            <a href="/settings/products.csv">Скачать</a>{% else %}Не загружен. Первая колонка — артикул, далее наименование и характеристики с единицей в заголовке: «Мощность, кВт».{% endif %}</div>
+          {% if psaved %}<p class="ok-t">Справочник загружен: позиций {{ psaved }}.</p>{% endif %}
+          {% if perror %}<p class="bad-t">Справочник не загружен: {{ perror }}</p>{% endif %}
+          <p><input type="file" form="pr-upload" name="file" accept=".csv,.txt,.xlsx">
+            <button class="btn ghost small" form="pr-upload">Загрузить CSV / XLSX</button>
+            {% if pref %}<button class="btn ghost small danger" form="pr-delete" onclick="return confirm('Удалить справочник?')">Удалить</button>{% endif %}</p>
+        </div>{% endif %}
+        {% if g == 'notify' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-notify', this)">Отправить проверочное уведомление</button>
+          <span class="muted"></span></p>
+          <p><button type="button" class="btn ghost small" onclick="testConn('/settings/remind-now', this)">Разослать напоминания сейчас</button>
+          <span class="muted"></span></p>
+          <p><button type="button" class="btn ghost small" onclick="testConn('/settings/mgmt-report-now', this)">Отправить отчет для руководства сейчас</button>
+          <span class="muted"></span></p>{% endif %}
+        {% if g == 'access' %}<p><a class="btn ghost small" href="/admin/users">Пользователи и роли →</a> <a class="btn ghost small" href="/admin/audit">Журнал действий →</a></p>
+          <div class="setting"><div class="title">Проверить вход LDAP</div><div class="short">Сначала сохраните настройки. Пароль никуда не записывается.</div>
+          <div class="filters"><input type="text" id="ldap-login" placeholder="логин"><input type="password" id="ldap-pw" placeholder="пароль">
+          <button type="button" class="btn ghost small" onclick="testLdap(this)">Проверить</button><span class="muted"></span></div></div>{% endif %}
         {% if g == 'spelling' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-lt', this)">Проверить связь с LanguageTool</button>
           <span class="muted"></span></p>{% endif %}
         {% for s in items %}{% set val = vals.get(s.key) %}
@@ -38,7 +78,7 @@
           <div class="top">
             <div>
               <div class="title">{{ s.title }}</div>
-              <div class="key">{{ s.key }} · по умолчанию: {% if s.type=='bool' %}{{ 'включено' if s.default else 'выключено' }}{% elif s.type=='multi' %}{{ s.default|length }} знач.{% elif s.type=='secret' %}пусто{% elif s.type=='text' %}список{% else %}{{ s.default }}{% endif %}</div>
+              <div class="key">{{ s.key }} · по умолчанию: {% if s.type=='bool' %}{{ 'включено' if s.default else 'выключено' }}{% elif s.type=='multi' %}{{ s.default|length }} знач.{% elif s.type=='secret' %}пусто{% elif s.type=='text' %}список{% elif s.default == '' %}пусто{% else %}{{ s.default }}{% endif %}</div>
               <div class="short">{{ s.description.split('. ')[0] }}.</div>
               <button type="button" class="toggle">Подробнее ▾</button>
             </div>

@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}Нет доступа{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap"><div class="card login" style="max-width:560px">
+  <h2>Нет доступа</h2>
+  <p>{{ msg }}. Эта страница доступна {% if request.url.path.startswith(('/settings', '/admin')) %}только администратору{% else %}корректору и администратору{% endif %}.</p>
+  <p class="muted">Если доступ нужен для работы, попросите администратора изменить вашу роль на странице «Пользователи».</p>
+  <p><a class="btn ghost" href="/">На главную</a></p>
+</div></div></section>
+{% endblock %}

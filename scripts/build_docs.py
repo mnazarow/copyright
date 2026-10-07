@@ -18,7 +18,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(ROOT, "docs")
 OUT = os.path.join(DOCS, "Корректор_документация.docx")
 NAVY = "0F4382"
-PAGES = ["index", "methodology", "usage", "analytics", "trends", "settings", "installation", "administration", "api", "faq"]
+PAGES = ["index", "methodology", "usage", "analytics", "trends", "users", "integrations", "standards", "settings", "installation",
+         "administration", "api", "faq"]
 
 
 def slug(text):
@@ -152,7 +153,8 @@ def finish(src, dst, version):
         top.set(qn(k), v)
     bdr.append(top)
     pPr.append(bdr)
-    para_before("ВОДОКОМФОРТ · ИНЖИНИРИНГ", 13, False, RGBColor(0x6B, 0x72, 0x80), 30)
+    lp = para_before(space=24)
+    lp.add_run().add_picture(os.path.join(DOCS, "images", "logo.png"), height=Cm(2.6))
     para_before("КОРРЕКТОР", 44, False, navy, 12)
     para_before("Веб-сервис корректорской вычитки PDF-документов", 18, False, None, 18)
     para_before("Полная документация: методология, работа с сервисом, аналитика и тренды, справочник настроек, "

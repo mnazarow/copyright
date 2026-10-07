@@ -30,18 +30,18 @@
 
 ### Шаг 1. Скопируйте установщик на сервер
 
-Установщик — один файл `korrektor-1.1.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
+Установщик — один файл `korrektor-1.4.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
 
 **Windows (PowerShell):**
 
 ```powershell
-scp .\korrektor-1.1.0-installer.sh user@10.0.0.15:~/
+scp .\korrektor-1.4.0-installer.sh user@10.0.0.15:~/
 ```
 
 **macOS / Linux:**
 
 ```bash
-scp korrektor-1.1.0-installer.sh user@10.0.0.15:~/
+scp korrektor-1.4.0-installer.sh user@10.0.0.15:~/
 ```
 
 Здесь `user` — ваше имя на сервере, `10.0.0.15` — адрес сервера. В WinSCP просто перетащите файл в окно сервера.
@@ -55,7 +55,7 @@ ssh user@10.0.0.15
 ### Шаг 3. Запустите установку
 
 ```bash
-sudo bash korrektor-1.1.0-installer.sh
+sudo bash korrektor-1.4.0-installer.sh
 ```
 
 Программа сама определит систему, поставит нужные пакеты, создаст службу и запустит ее. Через 2–5 минут на экране появятся адрес и пароль:
@@ -71,17 +71,17 @@ sudo bash korrektor-1.1.0-installer.sh
 
 ### Установка из распакованной папки
 
-Если у вас архив `korrektor-1.1.0.tar.gz` или папка с исходниками:
+Если у вас архив `korrektor-1.4.0.tar.gz` или папка с исходниками:
 
 ```bash
-tar xzf korrektor-1.1.0.tar.gz
-cd korrektor-1.1.0
+tar xzf korrektor-1.4.0.tar.gz
+cd korrektor-1.4.0
 sudo bash scripts/install.sh
 ```
 
 ## 3. Ключи установки
 
-Ключи пишутся после имени файла, например: `sudo bash korrektor-1.1.0-installer.sh --port 9000 --with-nginx`.
+Ключи пишутся после имени файла, например: `sudo bash korrektor-1.4.0-installer.sh --port 9000 --with-nginx`.
 
 | Ключ | Что делает | Пример |
 |---|---|---|
@@ -92,6 +92,8 @@ sudo bash scripts/install.sh
 | `--domain ИМЯ` | имя сайта для nginx | `--domain korrektor.vodokomfort.local` |
 | `--with-ocr` | поставить Tesseract для распознавания сканов | `--with-ocr` |
 | `--with-languagetool` | поставить локальный сервер грамматики LanguageTool (≈250 МБ, Java) | `--with-languagetool` |
+| `--with-office` | поставить LibreOffice Writer: прием документов DOC, DOCX, ODT, RTF (≈300 МБ) | `--with-office` |
+| `--full` | все дополнения сразу: OCR, LanguageTool, LibreOffice | `--full` |
 | `--open-firewall` | открыть порт в firewalld или ufw | `--open-firewall` |
 | `--source ИСТОЧНИК` | взять программу из архива, git-репозитория или папки | `--source https://git.local/korrektor.git` |
 | `--yes` | не задавать вопросов | `--yes` |
@@ -99,7 +101,7 @@ sudo bash scripts/install.sh
 **Рекомендуемая установка для офисной сети:**
 
 ```bash
-sudo bash korrektor-1.1.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --open-firewall
+sudo bash korrektor-1.4.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --with-office --open-firewall
 ```
 
 ## 4. Что и куда устанавливается
@@ -180,7 +182,7 @@ mkdir wheels && pip download -d wheels -r requirements.txt
 
 ```bash
 export PIP_NO_INDEX=1 PIP_FIND_LINKS=$HOME/wheels
-sudo -E bash korrektor-1.1.0-installer.sh
+sudo -E bash korrektor-1.4.0-installer.sh
 ```
 
 ## 9. Обновление
@@ -194,16 +196,18 @@ sudo -E bash korrektor-1.1.0-installer.sh
 
 При ошибке на шагах 3–4 программа сама возвращает предыдущую версию и запускает службу.
 
-При обновлении с версии 1.0.0 база заданий дополняется полем времени начала обработки; старые задания остаются и попадают в аналитику (без разбивки времени по этапам).
+При обновлении с версий 1.0–1.1 база заданий дополняется полями «начало обработки», «загрузил», «автор», «отдел», создаются таблицы пользователей и журнала. Старые задания остаются и попадают в аналитику (без автора и разбивки времени по этапам). Вход после обновления: логин `admin` и прежний пароль; учетные записи сотрудников заведите на странице «Пользователи» или включите вход через LDAP (см. [Пользователи, роли и журнал](users.md)). Для приема документов Word доустановите LibreOffice: `sudo apt install libreoffice-writer-nogui` (или повторно запустите установщик с ключом `--with-office`).
+
+При обновлении до 1.4 в таблицу пользователей добавляются поля второго фактора; настройки, пароли и открытые сеансы сохраняются. Новые возможности (стандарт оформления, справочник продукции, двухфакторный вход, разделение по отделам, напоминания, отчет для руководства) выключены или не заданы, пока их не настроить; только профиль оформления документа собирается сразу. Шрифт для PDF-отчета входит в программу — дополнительных пакетов не нужно.
 
 ```bash
-sudo bash korrektor-1.1.0-installer.sh --update
+sudo bash korrektor-1.4.0-installer.sh --update
 ```
 
 Или из архива, папки, git:
 
 ```bash
-sudo korrektor update --source korrektor-1.1.0.tar.gz
+sudo korrektor update --source korrektor-1.4.0.tar.gz
 sudo korrektor update --source https://git.local/korrektor.git
 ```
 
@@ -211,7 +215,30 @@ sudo korrektor update --source https://git.local/korrektor.git
 
 Повторный запуск установщика (не `--update`) безопасен: адрес и порт меняются, только если явно указаны `--listen` и `--port`; пароль и ключ сеансов сохраняются. Запускать установщик из самой папки `/opt/korrektor` нельзя — он откажется и подскажет, что делать.
 
-## 10. Удаление
+## 10. Запуск в Docker
+
+Если на сервере принят Docker, вместо установщика можно собрать образ из распакованного архива:
+
+```bash
+tar xzf korrektor-1.4.0.tar.gz && cd korrektor-1.4.0
+echo 'KORREKTOR_ADMIN_PASSWORD=Сложный-Пароль-2026' > .env     # без пароля запуск отменяется
+docker compose up -d --build
+# адрес: http://сервер:8080, логин admin
+```
+
+| Что | Где |
+|---|---|
+| Данные (задания, настройки, база, ключ сеансов, свой мастер-промпт) | том `korrektor-data` → `/data` в контейнере |
+| Обратный прокси на другом контейнере | добавьте его адрес в `KORREKTOR_TRUSTED_PROXIES`, иначе в журнале будет адрес прокси, а блокировка перебора паролей будет общей |
+| Документы Word | LibreOffice включен в образ (аргумент сборки `WITH_OFFICE=1`) |
+| Распознавание сканов | аргумент сборки `WITH_OCR=1` |
+| LanguageTool | раскомментируйте сервис `languagetool` в `docker-compose.yml`, в настройках укажите `http://languagetool:8010` |
+| Проверка состояния | встроенный HEALTHCHECK по `/api/health` |
+| Обновление | распакуйте новую версию, `docker compose up -d --build` — том с данными сохраняется |
+
+Перед контейнером поставьте обратный прокси с HTTPS (nginx, Traefik, Caddy).
+
+## 11. Удаление
 
 ```bash
 sudo korrektor uninstall            # удалить программу, задания и настройки сохранить
@@ -220,22 +247,19 @@ sudo korrektor uninstall --purge    # удалить все (перед этим
 
 Системные пакеты (python3, hunspell, nginx) не удаляются — ими могут пользоваться другие программы. LanguageTool удаляется, только если его устанавливал Корректор (ключ `--with-languagetool`).
 
-## 11. Резервное копирование и перенос
+## 12. Резервное копирование и перенос
 
 ```bash
 sudo korrektor backup                                   # копия в /var/backups/korrektor/
-sudo korrektor restore /var/backups/korrektor/korrektor-20261007-120000.tgz
+sudo korrektor verify /var/backups/korrektor/korrektor-auto-20261007-120000.tgz
+sudo korrektor restore /var/backups/korrektor/korrektor-auto-20261007-120000.tgz
 ```
 
-**Перенос на другой сервер:** сделайте `backup`, установите Корректор на новом сервере, скопируйте файл копии и выполните `restore`.
+Копии по расписанию, проверку целостности и восстановление одной кнопкой удобнее делать в интерфейсе — см. [Администрирование, п. 9](administration.md#9-резервное-копирование-и-восстановление).
 
-Для регулярных копий добавьте задание в cron (`sudo crontab -e`):
+**Перенос на другой сервер:** сделайте копию, установите Корректор на новом сервере, войдите администратором, загрузите архив в Настройки → «Система и безопасность» → «Загрузить копию с компьютера» и нажмите «Восстановить…» (или скопируйте файл и выполните `sudo korrektor restore файл --with-env`).
 
-```
-30 2 * * * /usr/local/bin/korrektor backup >/dev/null 2>&1
-```
-
-## 12. Команда управления
+## 13. Команда управления
 
 ![Команда korrektor](images/term-help.png)
 
@@ -247,16 +271,17 @@ sudo korrektor restore /var/backups/korrektor/korrektor-20261007-120000.tgz
 | `sudo korrektor restart` | перезапуск (также `start`, `stop`) |
 | `sudo korrektor passwd` | новый случайный пароль; `sudo korrektor passwd МойПароль` — заданный (без пробелов и кавычек). Все открытые сеансы завершаются |
 | `sudo korrektor password` | показать текущий пароль |
-| `sudo korrektor backup` / `restore Ф` | резервная копия и восстановление |
+| `sudo korrektor backup` / `verify Ф` / `restore Ф` | резервная копия, проверка целостности, восстановление (`--with-env` — и файл настроек службы) |
+| `sudo korrektor 2fa-off ЛОГИН` | отключить двухфакторный вход сотрудника (потерян телефон) |
 | `sudo korrektor update …` | обновление |
 | `sudo korrektor uninstall [--purge]` | удаление |
 | `korrektor version` / `korrektor url` | версия и адрес |
 
-## 13. Проверка после установки
+## 14. Проверка после установки
 
 ```bash
 korrektor status                          # active (running) и {"status":"ok"}
-curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.1.0"}
+curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.4.0"}
 ```
 
 Затем загрузите любой PDF через браузер: через минуту должен появиться отчет с результатом 25/25.

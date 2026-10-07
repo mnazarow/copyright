@@ -34,8 +34,9 @@ SERVICE_RULES = """
 
 
 def master_prompt():
-    files = sorted(f for f in os.listdir(PROMPT_DIR) if f.endswith(".md"))
-    custom = os.path.join(PROMPT_DIR, "custom_prompt.md")
+    files = sorted(f for f in os.listdir(PROMPT_DIR) if f.endswith(".md") and f != "custom_prompt.md")
+    from .. import core
+    custom = core.CUSTOM_PROMPT
     path = custom if os.path.exists(custom) else os.path.join(PROMPT_DIR, files[-1])
     return open(path, encoding="utf-8").read()
 

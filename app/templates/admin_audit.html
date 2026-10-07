@@ -1,0 +1,26 @@
+{% extends "base.html" %}{% block title %}Журнал действий{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <div class="job-head"><div><h1>Журнал действий</h1>
+    <p class="muted" style="margin-top:-6px">Кто и когда входил, загружал, удалял, отмечал замечания, менял настройки. Хранится {{ st.audit_days }} дней.</p></div>
+    <div class="dl"><a class="btn ghost small" href="/admin/users">Пользователи</a>
+      <a class="btn ghost small" href="/admin/audit/export?q={{ q|urlencode }}&user={{ fuser|urlencode }}&action={{ faction|urlencode }}">Выгрузить CSV</a></div></div>
+  <form class="filters" method="get">
+    <select name="user"><option value="">Все пользователи</option>{% for w in who %}<option {{ 'selected' if w == fuser }}>{{ w }}</option>{% endfor %}</select>
+    <select name="action"><option value="">Все действия</option>{% for k, v in names.items() %}<option value="{{ k }}" {{ 'selected' if k == faction }}>{{ v }}</option>{% endfor %}</select>
+    <input type="text" name="q" value="{{ q }}" placeholder="Объект, подробности, адрес…">
+    <button class="btn small">Показать</button><span class="muted">записей: {{ total }}</span>
+  </form>
+  <div class="card" style="overflow:auto;padding:0"><table class="t compact">
+    <tr><th>Время</th><th>Пользователь</th><th>Адрес</th><th>Действие</th><th>Объект</th><th>Подробности</th></tr>
+    {% for r in rows %}<tr class="{{ 'warn-row' if r.action in ('login_failed', 'job_delete', 'user_delete', 'settings_reset') else '' }}">
+      <td class="nowrap">{{ r.ts.replace('T', ' ') }}</td><td>{{ r.user or '—' }}</td><td class="small">{{ r.ip }}</td>
+      <td>{{ names.get(r.action, r.action) }}</td>
+      <td>{% if r.action in ('job_restart', 'rebuild') %}<a href="/job/{{ r.target }}">{{ r.target }}</a>{% else %}{{ r.target }}{% endif %}</td>
+      <td class="small" style="max-width:420px;word-break:break-word">{{ r.detail }}</td></tr>{% endfor %}
+  </table></div>
+  {% if pages > 1 %}<div class="filters">{% if pageno > 1 %}<a class="btn small ghost" href="?page={{ pageno - 1 }}&q={{ q|urlencode }}&user={{ fuser|urlencode }}&action={{ faction }}">← Новее</a>{% endif %}
+    <span class="muted">страница {{ pageno }} из {{ pages }}</span>
+    {% if pageno < pages %}<a class="btn small ghost" href="?page={{ pageno + 1 }}&q={{ q|urlencode }}&user={{ fuser|urlencode }}&action={{ faction }}">Старее →</a>{% endif %}</div>{% endif %}
+</div></section>
+{% endblock %}

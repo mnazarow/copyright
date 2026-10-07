@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block title %}Двухфакторный вход{% endblock %}
+{% block body %}
+<div class="wrap"><div class="card login">
+{% if mode == 'code' %}
+  <h2>Код подтверждения</h2>
+  <p class="muted">Учетная запись <b>{{ login }}</b> защищена вторым фактором. Откройте приложение-аутентификатор
+  (Яндекс Ключ, Google Authenticator и т. п.) и введите шестизначный код «Корректор». Потеряли телефон — введите
+  один из резервных кодов.</p>
+  {% if error %}<div class="notice warn">Неверный код. Проверьте, что время на телефоне установлено автоматически.</div>{% endif %}
+  <form method="post" action="/login/2fa">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label class="f">Код из приложения или резервный код</label>
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus maxlength="12" spellcheck="false">
+    <p><button class="btn" type="submit">Подтвердить</button> <a class="btn ghost" href="/login">Отмена</a></p>
+  </form>
+{% elif mode == 'setup' %}
+  <h2>Подключите второй фактор</h2>
+  <p class="muted">Для учетной записи <b>{{ login }}</b> вход по одному паролю запрещен администратором. Установите на
+  телефон приложение-аутентификатор (Яндекс Ключ, Google Authenticator, Microsoft Authenticator, FreeOTP),
+  отсканируйте код и введите шесть цифр, которые покажет приложение.</p>
+  {% include "_totp_setup.html" %}
+{% else %}
+  <h2>Резервные коды</h2>
+  <p>Двухфакторный вход подключен. Сохраните резервные коды — каждый можно использовать один раз, если телефон
+  потерян или недоступен. Больше они показаны не будут.</p>
+  <pre class="codes">{% for c in codes %}{{ c }}
+{% endfor %}</pre>
+  <p><button type="button" class="btn ghost small" onclick="navigator.clipboard && navigator.clipboard.writeText(document.querySelector('.codes').textContent)">Скопировать</button></p>
+  <p><a class="btn" href="{{ next or '/' }}">Продолжить</a></p>
+{% endif %}
+</div></div>
+{% endblock %}

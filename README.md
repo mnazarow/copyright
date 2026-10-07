@@ -7,7 +7,7 @@ XLSX и JSON. Отчет собирается и проверяется кодо
 ## Установка одной командой
 
 ```bash
-sudo bash korrektor-1.1.0-installer.sh            # самораспаковывающийся установщик
+sudo bash korrektor-1.4.0-installer.sh            # самораспаковывающийся установщик
 # или из распакованной папки:
 sudo bash scripts/install.sh
 ```
