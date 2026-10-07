@@ -19,7 +19,7 @@ if [ $YES -eq 0 ]; then
 fi
 if [ $PURGE -eq 1 ] && [ $BACKUP -eq 1 ] && [ -d $DATA ]; then
   mkdir -p /var/backups/$APP; B=/var/backups/$APP/before-uninstall-$(date +%Y%m%d-%H%M%S).tgz
-  tar czf "$B" -C / var/lib/$APP etc/$APP 2>/dev/null && echo "Резервная копия: $B"
+  ( umask 077; tar czf "$B" -C / var/lib/$APP etc/$APP 2>/dev/null ) && echo "Резервная копия: $B"
 fi
 systemctl disable --now $APP 2>/dev/null
 LT_OURS=0; [ -f $CONF/.lt_installed ] && LT_OURS=1      # LanguageTool ставил установщик Корректора

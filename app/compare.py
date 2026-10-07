@@ -14,7 +14,7 @@ import os
 import re
 
 from . import analytics, core
-from .pipeline.common import norm
+from .pipeline.common import norm, safe_dpi
 
 SKIP_RULES = ("batch", "candidate")
 
@@ -178,4 +178,4 @@ def page_diff_png(a, b, page, side, dpi=110):
     for w in words:
         r = pymupdf.Rect(w[:4]) + (-1, -1, 1, 1)
         pg.draw_rect(r, color=color, width=1.4, fill=color, fill_opacity=0.18, overlay=True)
-    return pg.get_pixmap(dpi=dpi).tobytes("png"), len(words)
+    return pg.get_pixmap(dpi=safe_dpi(pg, dpi)).tobytes("png"), len(words)

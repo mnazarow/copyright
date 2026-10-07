@@ -124,7 +124,7 @@ def account_page(request: Request, saved: int = 0, error: str = ""):
 
 
 @router.get("/account/2fa", response_class=HTMLResponse)
-def account_2fa_page(request: Request, error: str = ""):
+def account_2fa_page(request: Request, error: str = "", required: str = ""):
     import time
     from . import oidc, totp
     u = me(request)
@@ -136,7 +136,7 @@ def account_2fa_page(request: Request, error: str = ""):
     secret = secret or totp.new_secret()
     r = _tpl.TemplateResponse(request, "account_2fa.html", _ctx(request, "account", secret=secret, error=error,
                                                                 uri=totp.uri(secret, u["login"]), action="/account/2fa",
-                                                                next="/account"))
+                                                                next="/account", required=bool(required)))
     if fresh:
         r.set_cookie("korrektor_2fa_new", oidc._sign({"t": "totp", "s": secret, "u": u["login"], "exp": time.time() + 600}),
                      httponly=True, samesite="lax", max_age=600,
@@ -171,8 +171,13 @@ def account_2fa_disable(request: Request, code: str = Form("")):
     if totp.required(u, core.load_settings()):
         return RedirectResponse("/account?error=Двухфакторный вход для вашей роли обязателен — отключить его нельзя",
                                 status_code=303)
+    from .main import _take_attempt, _attempt_ok
+    key = "2fa-off|" + u.get("login", "").lower()
+    if not _take_attempt([(key, 5)]):
+        return RedirectResponse("/account?error=Слишком много неверных кодов — повторите через 5 минут", status_code=303)
     if not totp.verify(u.get("login", ""), code):
         return RedirectResponse("/account?error=Неверный код — второй фактор не отключен", status_code=303)
+    _attempt_ok(key)
     totp.disable(u["login"])
     users.audit(request, "totp", u["login"], "отключен в профиле")
     r = RedirectResponse("/account?saved=1", status_code=303)
@@ -194,8 +199,13 @@ def account_password(request: Request, old: str = Form(""), new: str = Form(""),
         return RedirectResponse("/account?error=Пароль этой учетной записи меняется не здесь "
                                 "(администратор — командой sudo korrektor passwd, LDAP — в домене)", status_code=303)
     full = users.get(u["login"])
+    from .main import _take_attempt, _attempt_ok
+    key = "pw-change|" + u["login"].lower()
+    if not _take_attempt([(key, 5)]):
+        return RedirectResponse("/account?error=Слишком много неверных попыток — повторите через 5 минут", status_code=303)
     if not users.verify_pw(old, full.get("pw", "")):
         return RedirectResponse("/account?error=Текущий пароль указан неверно", status_code=303)
+    _attempt_ok(key)
     if new != new2:
         return RedirectResponse("/account?error=Новые пароли не совпадают", status_code=303)
     prob = users.pw_problem(new)
@@ -275,6 +285,43 @@ async def mgmt_report_now(request: Request):
     return {"ok": r == "ok", "answer": "отчет отправлен", "error": r}
 
 
+# ------------------------------------------------------------------ контроль разбора и Битрикс24
+@router.get("/control", response_class=HTMLResponse)
+def control_page(request: Request, department: str = ""):
+    from . import control
+    data = control.overview(users.own_only(me(request)), department)
+    st = core.load_settings()
+    return _tpl.TemplateResponse(request, "control.html", _ctx(request, "control", data=data, department=department,
+                                                               bitrix=bool(st.get("bitrix_webhook"))))
+
+
+@router.post("/control/remind/{jid}")
+async def control_remind(request: Request, jid: int):
+    u = me(request)
+    if not users.can(u, "review") or not users.job_visible(u, jid):
+        raise HTTPException(403, "Напоминать может корректор (по документам, которые ему видны)")
+    st = core.load_settings()
+    r = await run_in_threadpool(notify.send_reminders, st, True, jid)
+    users.audit(request, "remind", jid, r)
+    ch = "; ".join(f"{k}: {v}" for k, v in r["result"].items()) or "ни один канал не включен"
+    ok = bool(r["docs"]) and any(v == "ok" for v in r["result"].values())
+    return {"ok": ok, "answer": f"писем: {r['letters']}; {ch}", "error": ("замечаний без отметки нет" if not r["docs"] else ch)}
+
+
+@router.post("/job/{jid}/bitrix")
+async def job_bitrix(request: Request, jid: int):
+    from . import control
+    if not users.can(me(request), "review"):
+        raise HTTPException(403, "Задачу ставит корректор или администратор")
+    try:
+        tid = await run_in_threadpool(control.bitrix_task, core.load_settings(), jid,
+                                      "Корректор просит разобрать замечания и исправить документ.")
+    except Exception as e:  # noqa
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+    users.audit(request, "bitrix", jid, {"task": tid})
+    return {"ok": True, "answer": f"задача № {tid} поставлена"}
+
+
 # ------------------------------------------------------------------ справочник продукции
 async def _products_from_request(request):
     from .pipeline import products
@@ -302,6 +349,16 @@ async def products_upload(request: Request):
         return RedirectResponse("/settings?perror=" + str(e)[:300] + "#standard", status_code=303)
     users.audit(request, "products", ref["file"], {"items": len(ref["items"]), "units": ref["units"]})
     return RedirectResponse(f"/settings?psaved={len(ref['items'])}#standard", status_code=303)
+
+
+@router.post("/settings/products/sync")
+async def products_sync_now(request: Request):
+    from .pipeline import products
+    r = await run_in_threadpool(products.sync, core.load_settings())
+    users.audit(request, "products", "автообновление вручную", {k: r.get(k) for k in ("ok", "items", "error")})
+    if r.get("ok"):
+        return {"ok": True, "answer": f"справочник обновлен: позиций {r['items']}"}
+    return {"ok": False, "error": r.get("error")}
 
 
 @router.post("/settings/products/delete")
@@ -390,7 +447,10 @@ def compare_export(a: int, b: int):
 async def settings_apply(request: Request):
     """Изменить одну логическую настройку (кнопка в рекомендациях аналитики)."""
     from .settings_schema import SCHEMA
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Ожидается JSON")
     key = body.get("key") if isinstance(body, dict) else None
     if key not in SCHEMA or SCHEMA[key]["type"] != "bool":
         raise HTTPException(400, "Так можно менять только логические настройки (включено/выключено)")

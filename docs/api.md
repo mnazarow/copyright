@@ -26,7 +26,7 @@ Authorization: Bearer <токен>
 | POST | `/api/jobs/{id}/rebuild` | пересобрать отчет; необязательно `{"summary": "…"}` |
 | GET | `/api/compare?a=ID&b=ID` | сравнение двух версий: сколько исправлено, осталось, новых; `details` — построчно |
 | POST | `/api/products?name=файл.csv` | обновить справочник продукции: тело — CSV (или multipart с полем `file`, CSV/XLSX); см. [Стандарт оформления и справочник](standards.md#автоматическое-обновление-из-1с) |
-| GET | `/metrics` | метрики Prometheus (см. [Уведомления и интеграции](integrations.md#9-мониторинг-метрики-prometheus)) |
+| GET | `/metrics` | метрики Prometheus (см. [Уведомления и интеграции](integrations.md#10-мониторинг-метрики-prometheus)) |
 
 ### Аналитика и тренды
 
@@ -40,6 +40,7 @@ Authorization: Bearer <токен>
 | POST | `/api/analytics/glossary` | добавить пару в глоссарий: `{"good": "рым-болт", "bad": "рым болт"}` |
 | GET | `/api/trends` | данные раздела «Тренды»; дополнительно `gran` = `day` \| `week` \| `month` |
 | GET | `/api/trends/export?format=xlsx` | выгрузка трендов: `xlsx`, `csv`, `json` |
+| GET | `/control` | страница «Контроль разбора» (браузер) |
 | GET | `/analytics/report.pdf?period=30` | отчет для руководства в PDF с теми же фильтрами (только из браузера, вход по сеансу) |
 
 Фильтры аналитики и трендов передаются параметрами адреса: `period` (`7`, `30`, `90`, `180`, `365`, `all`, `custom`), `from` и `to` (ГГГГ-ММ-ДД, для `custom`), `q` (часть названия), `family`, `batch`, `job`, `type`, `source` (`typo`, `codes`, `house`, `data`, `spell`, `lt`, `ai`, `batch`, `cand`), `status` (`new`, `accepted`, `rejected`), `rule`.

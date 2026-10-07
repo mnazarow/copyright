@@ -108,3 +108,15 @@ def page_list(pages, limit=12):
     if len(ps) > limit:
         s += f" и еще {len(ps) - limit}"
     return s
+
+
+MAX_PIXELS = 36_000_000          # ≈ 6000×6000: изображение страницы не должно съесть память сервиса
+
+
+def safe_dpi(page, dpi):
+    """Разрешение, при котором картинка страницы не больше MAX_PIXELS (огромные страницы — до 5 м)."""
+    w, h = page.rect.width / 72, page.rect.height / 72
+    if w <= 0 or h <= 0:
+        return dpi
+    lim = (MAX_PIXELS / (w * h)) ** 0.5
+    return max(1, int(min(dpi, lim)))

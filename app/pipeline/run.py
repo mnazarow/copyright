@@ -10,7 +10,7 @@ import sys
 import pymupdf
 
 from . import autofix, exports, llm, office, preflight, spell
-from .common import AUTHOR, PageIndex, norm, page_list, yo
+from .common import AUTHOR, PageIndex, norm, page_list, safe_dpi, yo
 
 SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
 PY = sys.executable
@@ -30,7 +30,7 @@ def render_pages(pdf, outdir, dpi):
     for pno, page in enumerate(doc, 1):
         fn = os.path.join(outdir, f"p{pno:03d}.png")
         if not os.path.exists(fn):
-            page.get_pixmap(dpi=dpi).save(fn)
+            page.get_pixmap(dpi=safe_dpi(page, dpi)).save(fn)
 
 
 def candidates(dump):
@@ -86,6 +86,8 @@ def make_meta(name, dump, findings, pf, st, ocr_done, scans):
         notes.append("страницы-сканы распознаны OCR: " + page_list(ocr_done))
     elif scans:
         notes.append("страницы без текстового слоя (изображения): " + page_list(scans))
+    if pf and pf.get("curves"):
+        notes.append("текст в кривых, не проверялся: " + page_list(pf["curves"]))
     if notes:
         vol += " (" + "; ".join(notes) + ")"
     hl = [f"Документ: {name}" + (f" — «{title}»" if title else "") + (f", версия {ver}" if ver else ""),
@@ -97,15 +99,27 @@ def make_meta(name, dump, findings, pf, st, ocr_done, scans):
         hl.append("Технический контроль PDF: " + "; ".join(pf["items"])[:600])
     hl += [x for x in (st.get("report_extra_header") or "").splitlines() if x.strip()]
     totals = f"Всего замечаний: {len(findings)} (из них ошибок — {len(findings) - a}, требует проверки автором — {a})"
-    return {"header_lines": hl, "totals": totals, "summary": make_summary(findings, n)}
+    # шапка отчета: без «ё» (требование мастер-промпта, проверка 25) и без управляющих знаков (ломают DOCX)
+    hl = [clean(yo(x)) for x in hl]
+    return {"header_lines": hl, "totals": totals, "summary": clean(yo(make_summary(findings, n, (pf or {}).get("curves"))))}
 
 
-def make_summary(findings, pages):
+CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean(s):
+    return CTRL.sub("", s) if isinstance(s, str) else s
+
+
+def make_summary(findings, pages, curves=None):
+    if not findings and curves:
+        return (f"Проверено {pages} {plural(pages, 'страница', 'страницы', 'страниц')}. Текстовый слой отсутствует "
+                f"(текст переведен в кривые) на страницах {page_list(curves)} — их текст не вычитывался.")
     if not findings:
-        return f"Проверено {pages} страниц. Замечаний не найдено: текст и данные документа согласованы."
+        return f"Проверено {pages} {plural(pages, 'страница', 'страницы', 'страниц')}. Замечаний не найдено: текст и данные документа согласованы."
     a = sum(1 for f in findings if f["type"] == AUTHOR)
     sysm = sorted([f for f in findings if f.get("systemic")], key=lambda f: -f["systemic"])[:3]
-    parts = [f"Проверено {pages} страниц, найдено {len(findings)} замечаний, из них {a} требуют решения автора."]
+    parts = [f"Проверено {pages} {plural(pages, 'страница', 'страницы', 'страниц')}, найдено {len(findings)} замечаний, из них {a} требуют решения автора."]
     if sysm:
         parts.append("Системные дефекты: " + "; ".join(
             f"{LABELS.get(f.get('rule'), f['type'].lower())} ({f['systemic']} мест)" for f in sysm) + ".")
@@ -151,7 +165,10 @@ def report_name(st, name, job_id):
         base = tpl.format(name=name, date=dt.date.today().isoformat(), job=job_id)
     except (KeyError, IndexError, ValueError, AttributeError):
         base = f"{name}_корректура"                       # ошибка в шаблоне имени — имя по умолчанию
-    return re.sub(r'[\\/:*?"<>|]', "_", base).strip() or "отчет_корректура"
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base).strip() or "отчет_корректура"
+    while len(base.encode("utf-8")) > 180:              # + «_пометки.pdf» и т. п. — в пределах 255 байт имени файла
+        base = base[:-1]
+    return base.rstrip(" .") or "отчет_корректура"
 
 
 def build_report(job_dir, state, st, log):
@@ -166,14 +183,15 @@ def build_report(job_dir, state, st, log):
     a = sum(1 for f in fl if f["type"] == AUTHOR)
     meta["totals"] = f"Всего замечаний: {len(fl)} (из них ошибок — {len(fl) - a}, требует проверки автором — {a})"
     if st.get("report_summary_auto", True) and not state.get("summary_edited"):
-        meta["summary"] = make_summary(fl, state.get("pages", 0))
+        meta["summary"] = yo(make_summary(fl, state.get("pages", 0), (state.get("preflight") or {}).get("curves")))
+    meta = {k: ([clean(x) for x in v] if isinstance(v, list) else clean(v)) for k, v in meta.items()}
     rejected = list(state.get("rejected", []))
     # убранные из отчета замечания не должны оставлять кандидатов неразобранными
     for f in state["findings"]:
         if f not in fl:
             rejected.append({"text": f["src"], "reason": "замечание отклонено корректором или исключено настройками"})
     data = {"document": meta,
-            "findings": [{k: f[k] for k in ("page", "clause", "type", "src", "bad", "fix", "good", "note")} for f in fl],
+            "findings": [{k: clean(f[k]) for k in ("page", "clause", "type", "src", "bad", "fix", "good", "note")} for f in fl],
             "rejected": rejected, "reviewed": state.get("reviewed", [])}
     json.dump(data, open(os.path.join(job_dir, "findings.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     base = state["report_base"]
@@ -232,6 +250,16 @@ def process(job_dir, name, st, log, progress, job_id=0):
         progress(0.02, "Преобразование документа в PDF (LibreOffice)")
         office.to_pdf(src, pdf)
         log(f"Документ {os.path.basename(src)} преобразован в PDF")
+    try:
+        with pymupdf.open(pdf) as _d:
+            if _d.needs_pass and not _d.authenticate(""):
+                raise RuntimeError("PDF защищен паролем на открытие — снимите защиту (сохраните без пароля) и загрузите снова")
+            if _d.page_count == 0:
+                raise RuntimeError("В PDF нет страниц")
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa
+        raise RuntimeError(f"Файл не открывается как PDF: {e}")
     progress(0.03, "Извлечение текста и координат строк")
     code, out, err = sh([os.path.join(SCRIPTS, "extract.py"), pdf], job_dir)
     open(os.path.join(job_dir, "extract.log"), "w", encoding="utf-8").write(out + err)
@@ -270,7 +298,7 @@ def process(job_dir, name, st, log, progress, job_id=0):
             ref = products.load(products.PATH())
             if ref:
                 progress(0.24, "Сверка со справочником продукции")
-                products_res = products.check(dump, ref, st)
+                products_res = products.check(dump, ref, st, pdf)
                 log(f"Справочник продукции ({products_res['loaded']} позиций): найдено артикулов "
                     f"{products_res['found']}, замечаний {len(products_res['issues'])}")
         except Exception as e:  # noqa

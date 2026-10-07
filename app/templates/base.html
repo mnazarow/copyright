@@ -40,6 +40,7 @@
     <a href="/jobs" class="{{ 'active' if page=='jobs' }}">Задания</a>
     <a href="/analytics" class="{{ 'active' if page=='analytics' }}">Аналитика</a>
     <a href="/trends" class="{{ 'active' if page=='trends' }}">Тренды</a>
+    <a href="/control" class="{{ 'active' if page=='control' }}">Контроль</a>
     {% if not user or can('admin') %}<a href="/settings" class="{{ 'active' if page=='settings' }}">Настройки</a>{% endif %}
     <a href="/docs" class="{{ 'active' if page=='docs' }}">Документация</a>
   </nav>

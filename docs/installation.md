@@ -30,18 +30,18 @@
 
 ### Шаг 1. Скопируйте установщик на сервер
 
-Установщик — один файл `korrektor-1.4.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
+Установщик — один файл `korrektor-1.5.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
 
 **Windows (PowerShell):**
 
 ```powershell
-scp .\korrektor-1.4.0-installer.sh user@10.0.0.15:~/
+scp .\korrektor-1.5.0-installer.sh user@10.0.0.15:~/
 ```
 
 **macOS / Linux:**
 
 ```bash
-scp korrektor-1.4.0-installer.sh user@10.0.0.15:~/
+scp korrektor-1.5.0-installer.sh user@10.0.0.15:~/
 ```
 
 Здесь `user` — ваше имя на сервере, `10.0.0.15` — адрес сервера. В WinSCP просто перетащите файл в окно сервера.
@@ -55,7 +55,7 @@ ssh user@10.0.0.15
 ### Шаг 3. Запустите установку
 
 ```bash
-sudo bash korrektor-1.4.0-installer.sh
+sudo bash korrektor-1.5.0-installer.sh
 ```
 
 Программа сама определит систему, поставит нужные пакеты, создаст службу и запустит ее. Через 2–5 минут на экране появятся адрес и пароль:
@@ -71,17 +71,17 @@ sudo bash korrektor-1.4.0-installer.sh
 
 ### Установка из распакованной папки
 
-Если у вас архив `korrektor-1.4.0.tar.gz` или папка с исходниками:
+Если у вас архив `korrektor-1.5.0.tar.gz` или папка с исходниками:
 
 ```bash
-tar xzf korrektor-1.4.0.tar.gz
-cd korrektor-1.4.0
+tar xzf korrektor-1.5.0.tar.gz
+cd korrektor-1.5.0
 sudo bash scripts/install.sh
 ```
 
 ## 3. Ключи установки
 
-Ключи пишутся после имени файла, например: `sudo bash korrektor-1.4.0-installer.sh --port 9000 --with-nginx`.
+Ключи пишутся после имени файла, например: `sudo bash korrektor-1.5.0-installer.sh --port 9000 --with-nginx`.
 
 | Ключ | Что делает | Пример |
 |---|---|---|
@@ -101,7 +101,7 @@ sudo bash scripts/install.sh
 **Рекомендуемая установка для офисной сети:**
 
 ```bash
-sudo bash korrektor-1.4.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --with-office --open-firewall
+sudo bash korrektor-1.5.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --with-office --open-firewall
 ```
 
 ## 4. Что и куда устанавливается
@@ -182,7 +182,7 @@ mkdir wheels && pip download -d wheels -r requirements.txt
 
 ```bash
 export PIP_NO_INDEX=1 PIP_FIND_LINKS=$HOME/wheels
-sudo -E bash korrektor-1.4.0-installer.sh
+sudo -E bash korrektor-1.5.0-installer.sh
 ```
 
 ## 9. Обновление
@@ -200,14 +200,16 @@ sudo -E bash korrektor-1.4.0-installer.sh
 
 При обновлении до 1.4 в таблицу пользователей добавляются поля второго фактора; настройки, пароли и открытые сеансы сохраняются. Новые возможности (стандарт оформления, справочник продукции, двухфакторный вход, разделение по отделам, напоминания, отчет для руководства) выключены или не заданы, пока их не настроить; только профиль оформления документа собирается сразу. Шрифт для PDF-отчета входит в программу — дополнительных пакетов не нужно.
 
+При обновлении до 1.5 обновляется и команда `korrektor` (подкоманды `verify`, `restore`, `2fa-off`). В Docker по умолчанию заголовку X-Forwarded-For больше не доверяется с адресов шлюза Docker: если перед Корректором стоит обратный прокси в отдельном контейнере, впишите его адрес в `KORREKTOR_TRUSTED_PROXIES` (см. docker-compose.yml). Профиль проверки, выбранный при загрузке, больше не сбрасывает словари компании и подключение ИИ.
+
 ```bash
-sudo bash korrektor-1.4.0-installer.sh --update
+sudo bash korrektor-1.5.0-installer.sh --update
 ```
 
 Или из архива, папки, git:
 
 ```bash
-sudo korrektor update --source korrektor-1.4.0.tar.gz
+sudo korrektor update --source korrektor-1.5.0.tar.gz
 sudo korrektor update --source https://git.local/korrektor.git
 ```
 
@@ -220,7 +222,7 @@ sudo korrektor update --source https://git.local/korrektor.git
 Если на сервере принят Docker, вместо установщика можно собрать образ из распакованного архива:
 
 ```bash
-tar xzf korrektor-1.4.0.tar.gz && cd korrektor-1.4.0
+tar xzf korrektor-1.5.0.tar.gz && cd korrektor-1.5.0
 echo 'KORREKTOR_ADMIN_PASSWORD=Сложный-Пароль-2026' > .env     # без пароля запуск отменяется
 docker compose up -d --build
 # адрес: http://сервер:8080, логин admin
@@ -281,7 +283,7 @@ sudo korrektor restore /var/backups/korrektor/korrektor-auto-20261007-120000.tgz
 
 ```bash
 korrektor status                          # active (running) и {"status":"ok"}
-curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.4.0"}
+curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.5.0"}
 ```
 
 Затем загрузите любой PDF через браузер: через минуту должен появиться отчет с результатом 25/25.

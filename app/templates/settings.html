@@ -52,14 +52,17 @@
               <button class="btn ghost small" form="bk-upload">Загрузить</button></p></details>
         </div>{% endif %}
         {% if g == 'standard' %}<div class="setting"><div class="title">Справочник продукции</div>
-          <div class="short">{% if pref %}Загружен {{ pref.time }}: «{{ pref.file }}», позиций {{ pref.items }}{% if pref.units %}; сверяемые характеристики:
+          <div class="short">{% if pref and pref.file %}Загружен {{ pref.time }}: «{{ pref.file }}», позиций {{ pref.items }}{% if pref.units %}; сверяемые характеристики:
             {% for n, u in pref.units.items() %}{{ n }} ({{ u }}){{ ', ' if not loop.last }}{% endfor %}{% else %}; колонок с единицами измерения нет — сверяются только артикулы{% endif %}.
             <a href="/settings/products.csv">Скачать</a>{% else %}Не загружен. Первая колонка — артикул, далее наименование и характеристики с единицей в заголовке: «Мощность, кВт».{% endif %}</div>
           {% if psaved %}<p class="ok-t">Справочник загружен: позиций {{ psaved }}.</p>{% endif %}
           {% if perror %}<p class="bad-t">Справочник не загружен: {{ perror }}</p>{% endif %}
           <p><input type="file" form="pr-upload" name="file" accept=".csv,.txt,.xlsx">
             <button class="btn ghost small" form="pr-upload">Загрузить CSV / XLSX</button>
-            {% if pref %}<button class="btn ghost small danger" form="pr-delete" onclick="return confirm('Удалить справочник?')">Удалить</button>{% endif %}</p>
+            {% if pref and pref.file %}<button class="btn ghost small danger" form="pr-delete" onclick="return confirm('Удалить справочник?')">Удалить</button>{% endif %}</p>
+          {% if vals.products_sync_url %}<p class="small">Автообновление: {% if pref and pref.sync and pref.sync.time %}{{ pref.sync.time.replace('T', ' ') }} —
+            {% if pref.sync.ok %}<span class="ok-t">загружено позиций: {{ pref.sync.items }}</span>{% else %}<span class="bad-t">ошибка: {{ pref.sync.error }}</span>{% endif %}{% else %}еще не выполнялось{% endif %}
+            <button type="button" class="btn ghost small" onclick="testConn('/settings/products/sync', this)">Обновить сейчас</button> <span class="muted"></span></p>{% endif %}
         </div>{% endif %}
         {% if g == 'notify' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-notify', this)">Отправить проверочное уведомление</button>
           <span class="muted"></span></p>

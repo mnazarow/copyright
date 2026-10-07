@@ -4,11 +4,13 @@ from collections import Counter
 
 import pymupdf
 
+from .common import safe_dpi
+
 
 def preflight(pdf_path, st, dump):
     doc = pymupdf.open(pdf_path)
     res = {"fonts_not_embedded": [], "low_dpi": [], "page_sizes": {}, "scans": [], "empty": dump.get("empty_pages", []),
-           "placeholders": sorted({r["page"] for r in dump.get("placeholders", [])}), "items": []}
+           "placeholders": sorted({r["page"] for r in dump.get("placeholders", [])}), "items": [], "curves": []}
     sizes = Counter()
     fonts = {}
     min_dpi = int(st.get("preflight_min_dpi") or 0)
@@ -31,6 +33,14 @@ def preflight(pdf_path, st, dump):
                         big = True
             if big and len(txt) < 5:
                 res["scans"].append(pno)          # без текста: иллюстрация или скан — уточняет OCR
+        if len(txt) < 5 and not imgs:
+            try:
+                curves = sum(1 for dr in page.get_drawings() if "f" in (dr.get("type") or "")
+                             for it in dr["items"] if it[0] == "c")
+                if curves >= 150:                 # много залитых кривых без текста — буквы переведены в кривые
+                    res["curves"].append(pno)
+            except Exception:  # noqa
+                pass
         if min_dpi:
             for im in imgs:
                 xref, iw, ih = im[0], im[2], im[3]
@@ -52,6 +62,9 @@ def preflight(pdf_path, st, dump):
         pages = sorted({x["page"] for x in res["low_dpi"]})
         worst = min(x["dpi"] for x in res["low_dpi"])
         it.append(f"Изображения ниже {min_dpi} dpi: стр. {', '.join(map(str, pages[:20]))} (минимум {worst} dpi)")
+    if res["curves"]:
+        it.append("Текст переведен в кривые (нет текстового слоя, страница не проверялась): стр. "
+                  + ", ".join(map(str, res["curves"][:30])))
     if res["scans"]:
         it.append("Страницы без текстового слоя (изображение во всю страницу): " + ", ".join(map(str, res["scans"])))
     return res
@@ -65,7 +78,7 @@ def ocr_pages(pdf_path, pages, dump, log):
     done = []
     for pno in pages:
         try:
-            tp = doc[pno - 1].get_textpage_ocr(language="rus+eng", dpi=300, full=True)
+            tp = doc[pno - 1].get_textpage_ocr(language="rus+eng", dpi=safe_dpi(doc[pno - 1], 300), full=True)
             d = doc[pno - 1].get_text("dict", textpage=tp)
         except Exception as e:  # noqa
             log(f"OCR недоступен ({e}); страницы-сканы не распознаны")

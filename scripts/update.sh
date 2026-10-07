@@ -52,13 +52,15 @@ else
 fi
 SRC=$(cd "$SRC" && pwd)
 [ -f "$SRC/app/main.py" ] || die "В $SRC нет файлов программы"
+[ "$SRC" = "$PREFIX" ] && die "Источник совпадает с установленной программой ($PREFIX) — укажите папку или архив новой версии"
 OLD=$(cat $PREFIX/VERSION 2>/dev/null || echo ?); NEW=$(cat "$SRC/VERSION" 2>/dev/null || echo ?)
 say "Обновление $OLD → $NEW"
 
 if [ $BACKUP -eq 1 ]; then
   mkdir -p /var/backups/$APP
   B=/var/backups/$APP/before-update-$(date +%Y%m%d-%H%M%S).tgz
-  tar czf "$B" --exclude=opt/$APP/venv --exclude='*/pages/*.png' -C / var/lib/$APP etc/$APP opt/$APP 2>>"$LOG" \
+  # в копии korrektor.env и настройки с ключами — архив только для root (umask лишь внутри скобок)
+  ( umask 077; tar czf "$B" --exclude=opt/$APP/venv --exclude='*/pages/*.png' -C / var/lib/$APP etc/$APP opt/$APP 2>>"$LOG" ) \
     && ok "Резервная копия: $B" || die "Резервная копия не создана (место на диске?). Журнал: $LOG; без копии: --no-backup"
   ls -1t /var/backups/$APP/before-update-*.tgz 2>/dev/null | tail -n +6 | xargs -r rm -f   # хранить 5 последних
 fi
@@ -76,6 +78,7 @@ rollback() {
   chown -R $APP:$APP $PREFIX/app/prompts 2>/dev/null || true
   $PREFIX/venv/bin/pip install -q -r $PREFIX/requirements.txt >>"$LOG" 2>&1 || true
   svc start $APP
+  rm -rf "$ROLL" ${TMP:+"$TMP"}
 }
 trap 'rollback; die "Обновление отменено (журнал $LOG)"' ERR
 

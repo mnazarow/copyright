@@ -158,6 +158,8 @@ def authenticate(login, password, st):
         if not (u["pw"] and verify_pw(password, u["pw"])):
             return None, "bad"
         return (u, None) if u["active"] else (None, "disabled")      # «отключен» — только после верного пароля
+    if u and u["source"] != "ldap":
+        return None, "bad"                             # учетная запись единого входа не открывается паролем домена
     if st.get("ldap_enabled"):
         ok, info = ldap_bind(login, password, st)
         if not ok:
@@ -290,6 +292,35 @@ def client_ip(request):
     return host
 
 
+def _nets(text):
+    import ipaddress
+    out = []
+    for part in re.split(r"[\s,;]+", text or ""):
+        if part:
+            try:
+                out.append(ipaddress.ip_network(part, strict=False))
+            except ValueError:
+                pass                                   # ошибка в строке настройки — строка пропускается
+    return out
+
+
+def ip_allowed(ip, text):
+    """Адрес в списке сетей? Пустой список — разрешено все; 127.0.0.1 и ::1 разрешены всегда."""
+    import ipaddress
+    nets = _nets(text)
+    if not nets:
+        return True
+    try:
+        a = ipaddress.ip_address((ip or "").split("%")[0])
+    except ValueError:
+        return False
+    if a.is_loopback:
+        return True
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    return any(a in n for n in nets if n.version == a.version)
+
+
 def audit(request, action, target="", detail=""):
     try:
         u = getattr(request.state, "user", None) if request is not None else None
@@ -314,7 +345,7 @@ AUDIT_NAMES = {
     "download": "скачивание", "backup": "резервная копия", "restore": "восстановление из копии",
     "backup_upload": "загрузка копии", "remind": "напоминания", "totp": "двухфакторный вход",
     "mgmt_report": "отчет для руководства", "products": "справочник продукции",
-    "profile": "профиль изменен",
+    "profile": "профиль изменен", "bitrix": "задача в Битрикс24",
 }
 
 

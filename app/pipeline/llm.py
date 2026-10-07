@@ -34,7 +34,8 @@ SERVICE_RULES = """
 
 
 def master_prompt():
-    files = sorted(f for f in os.listdir(PROMPT_DIR) if f.endswith(".md") and f != "custom_prompt.md")
+    files = sorted((f for f in os.listdir(PROMPT_DIR) if f.endswith(".md") and f != "custom_prompt.md"),
+                   key=lambda f: [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", f)])   # v5.10 новее v5.7
     from .. import core
     custom = core.CUSTOM_PROMPT
     path = custom if os.path.exists(custom) else os.path.join(PROMPT_DIR, files[-1])

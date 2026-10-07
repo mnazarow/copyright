@@ -9,13 +9,16 @@ services:
         WITH_OFFICE: "1"     # 1 — прием документов Word (LibreOffice)
     image: korrektor:latest
     restart: unless-stopped
+    init: true               # «сборщик» дочерних процессов: LibreOffice, завершенный по таймауту, не остается зомби
     ports:
       - "8080:8080"
     environment:
       # пароль администратора берется из файла .env рядом (KORREKTOR_ADMIN_PASSWORD=...), без него запуск отменяется
       KORREKTOR_ADMIN_PASSWORD: "${KORREKTOR_ADMIN_PASSWORD:?Задайте KORREKTOR_ADMIN_PASSWORD в файле .env}"
-      # адреса обратных прокси, которым доверяется X-Forwarded-For (сеть Docker)
-      KORREKTOR_TRUSTED_PROXIES: "127.0.0.1,::1,172.16.0.1,172.17.0.1,172.18.0.1"
+      # адреса обратных прокси, которым доверяется X-Forwarded-For. По умолчанию — никому снаружи: иначе через
+      # шлюз Docker заголовок можно подделать и обойти блокировку подбора пароля. Если перед Корректором стоит
+      # nginx/Traefik в контейнере — впишите его адрес, например: "127.0.0.1,::1,172.18.0.5"
+      KORREKTOR_TRUSTED_PROXIES: "127.0.0.1,::1"
       # KORREKTOR_SECRET: ""   # если не задан — создается случайный в /data/.secret
     volumes:
       - korrektor-data:/data

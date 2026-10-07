@@ -11,6 +11,7 @@
       <a class="btn ghost small" href="/job/{{ job.id }}/file/source">Исходный PDF</a>
       {% if job.status == 'done' %}<a class="btn ghost small" href="/analytics?job={{ job.id }}" title="Графики и показатели этого документа">Аналитика</a>{% endif %}
       {% if job.status == 'done' %}<a class="btn ghost small" href="/compare?job={{ job.id }}" title="Что исправлено по сравнению с другой версией">Сравнить версии</a>{% endif %}
+      {% if job.status == 'done' and st.bitrix_webhook and can('review') %}<button type="button" class="btn ghost small" onclick="testConn('/job/{{ job.id }}/bitrix', this)" title="Поставить автору задачу со ссылкой на отчет">Задача в Битрикс24</button><span class="muted small"></span>{% endif %}
 {% if can('review') or job.owner == user.login %}
       <form method="post" action="/job/{{ job.id }}/restart" onsubmit="return confirm('Проверить документ заново с текущими настройками? Ручные отметки будут потеряны.')">
         <button class="btn ghost small">Проверить заново</button></form>

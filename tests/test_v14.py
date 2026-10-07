@@ -275,3 +275,213 @@ def test_attempts_atomic():
 def test_safe_next():
     from app.main import safe_next
     assert safe_next("/\t/evil.com") == "/" and safe_next("//evil") == "/" and safe_next("/jobs?x=1") == "/jobs?x=1"
+
+
+# ------------------------------------------------------------------ 1.5: исправления по проверке кода
+def test_ldap_cannot_open_oidc_account(monkeypatch):
+    users.save("sso_user", "Единый вход", "admin", None, source="oidc")
+    monkeypatch.setattr(users, "ldap_bind", lambda login, pw, st: (True, {}))
+    u, why = users.authenticate("sso_user", "любой", dict(core.load_settings(), ldap_enabled=True))
+    assert u is None
+
+
+def test_profile_keeps_company_settings():
+    from app.settings_schema import profile_overrides
+    o = profile_overrides("soft")
+    assert "whitelist" not in o and "ai_provider" not in o and "glossary" not in o
+    assert o.get("typo_double_space") is False
+
+
+def test_toc_regex_fast():
+    import re as _re
+    src = open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "app/pipeline/scripts/extract.py")).read()
+    ns = {"re": _re}
+    exec(src[src.index("class _Toc"):src.index("for p in pages:\n    toc = []")], ns)
+    t = time.time()
+    assert ns["toc_match"]("Подпись" + " " * 5000 + "Дата") is None
+    assert time.time() - t < 0.5
+    m = ns["toc_match"]("Введение ........ 3")
+    assert m.group(1) == "Введение" and m.group(2) == "3"
+
+
+def test_rules_regressions():
+    from app.pipeline import autofix
+    from app.pipeline.common import PageIndex
+    from app.settings_schema import DEFAULTS
+    lines = ["Давление 1-2 бар, температура 5-10 °C.", "Угол поворота 90º относительно оси", "см. п. 5.1 лицензии"]
+    idx = PageIndex({"lines": [{"pdf_page": 1, "lines": [{"text": t, "block": 0, "line": i} for i, t in enumerate(lines)],
+                                "head": [], "foot": []}]})
+    f, _ = autofix.build_findings(autofix.typography(idx, dict(DEFAULTS)), 5)
+    f = autofix.dedupe(f)
+    fixes = {x["src"]: x["fix"] for x in f}
+    assert fixes["Давление 1-2 бар, температура 5-10 °C."] == "Давление 1–2 бар, температура 5–10 °C."
+    assert fixes["Угол поворота 90º относительно оси"] == "Угол поворота 90° относительно оси"
+    assert "см. п. 5.1 лицензии" not in fixes
+
+
+def test_products_semicolon_decimal_comma():
+    ref = products.parse("Артикул;Наименование;Мощность, кВт;Высота, мм;Ширина, мм\nVT.1234;Насос;1,5;300;200\n".encode(), "a.csv")
+    assert list(ref["items"]) == ["VT.1234"] and ref["units"]["Мощность"] == "кВт"
+    dump = {"lines": [{"pdf_page": 1, "lines": [{"y": 1, "text": "VT.1234 высотой 300 мм"}]}]}
+    assert products.check(dump, ref, {})["issues"] == []
+
+
+def test_control_chars_and_curves(tmp_path):
+    from app.pipeline import preflight
+    from app.pipeline.run import clean, report_name
+    assert clean("Каталог\x00\x03 насосов") == "Каталог насосов"
+    assert len(report_name({}, "Ж" * 300, 1).encode()) <= 180
+    import pymupdf
+    d = pymupdf.open()
+    p = d.new_page()
+    sh = p.new_shape()
+    for i in range(60):
+        for j in range(4):
+            x, y = 40 + i * 8, 100 + j * 20
+            sh.draw_bezier((x, y), (x + 3, y - 6), (x + 6, y + 6), (x + 8, y))
+    sh.finish(fill=(0, 0, 0))
+    sh.commit()
+    d.save(str(tmp_path / "c.pdf"))
+    assert preflight.preflight(str(tmp_path / "c.pdf"), {}, {})["curves"] == [1]
+
+
+def test_upload_rollback_and_csrf(admin, tmp_path):
+    import zipfile as _z
+    pdf = make_pdf(str(tmp_path / "Z.pdf"), pages=1)
+    zp = tmp_path / "many.zip"
+    with _z.ZipFile(zp, "w") as z:
+        for i in range(201):
+            z.write(pdf, f"d{i}.pdf")
+    with core.db() as c:
+        n = c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    with open(zp, "rb") as fh:
+        r = admin.post("/api/jobs", files={"file": ("many.zip", fh)}, headers=O)
+    assert r.status_code == 413
+    with core.db() as c:
+        assert c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == n
+    r = admin.post("/settings/apply", content=b"{", headers=dict(O, **{"Content-Type": "application/json"}))
+    assert r.status_code == 400
+    r = admin.post("/settings/apply", json={"key": "typo_quotes", "value": True}, headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+    assert TestClient(app).get("/docs-files/administration.md", follow_redirects=False).status_code in (303, 401)
+
+
+# ------------------------------------------------------------------ 1.5: новые возможности
+import http.server
+import json as _json
+import threading
+
+
+class _Srv(http.server.BaseHTTPRequestHandler):
+    calls = []
+    body = b""
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        _Srv.calls.append(("GET", self.path, self.headers.get("Authorization")))
+        if self.headers.get("Authorization") != "Bearer t0ken":
+            self.send_response(401)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv")
+        self.end_headers()
+        self.wfile.write(_Srv.body)
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        data = _json.loads(self.rfile.read(n) or b"{}")
+        _Srv.calls.append(("POST", self.path, data))
+        res = {"result": [{"ID": "7"}]} if "user.get" in self.path else {"result": {"task": {"id": 501}}}
+        out = _json.dumps(res).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(out)
+
+
+@pytest.fixture(scope="module")
+def mock_srv():
+    s = http.server.HTTPServer(("127.0.0.1", 0), _Srv)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{s.server_port}"
+    s.shutdown()
+
+
+def test_table_columns(tmp_path):
+    import pymupdf
+    from conftest import FONT
+    d = pymupdf.open()
+    p = d.new_page()
+    kw = {"fontfile": FONT, "fontname": "dv"} if FONT else {}
+
+    def t(x, y, s):
+        p.insert_text((x, y), s, fontsize=9, **kw)
+    t(50, 80, "Модель"); t(150, 80, "Мощность, кВт"); t(260, 80, "Напор, м")
+    t(50, 100, "SPL-1010"); t(160, 100, "5,5"); t(270, 100, "40")
+    t(50, 115, "SPL-1020"); t(160, 115, "9"); t(270, 115, "45")
+    t(50, 200, "Параметр"); t(200, 200, "SPL-1010"); t(300, 200, "SPL-1020")
+    t(50, 220, "Напор, м"); t(205, 220, "40"); t(305, 220, "47")
+    d.save(str(tmp_path / "t.pdf"))
+    ref = products.parse("Артикул;Наименование;Мощность, кВт;Напор, м\nSPL-1010;У;5,5;40\nSPL-1020;У;7,5;45\n".encode(), "r.csv")
+    det = sorted(i["detail"] for i in products.check_tables(str(tmp_path / "t.pdf"), ref, {}))
+    assert det == ["SPL-1020: в таблице 47 м, в справочнике 45 м", "SPL-1020: в таблице 9 кВт, в справочнике 7,5 кВт"]
+
+
+def test_products_sync(admin, mock_srv):
+    _Srv.body = "Артикул;Мощность, кВт\nAB-100;1,5\nAB-200;2,2\n".encode("cp1251")
+    set_st(products_sync_url=mock_srv + "/export/products.csv", products_sync_auth="Bearer t0ken")
+    try:
+        r = admin.post("/settings/products/sync", headers=O).json()
+        assert r["ok"], r
+        assert products.sync_status()["items"] == 2
+        set_st(products_sync_auth="Bearer wrong")
+        assert not admin.post("/settings/products/sync", headers=O).json()["ok"]
+        assert "401" in products.sync_status()["error"]
+    finally:
+        set_st(products_sync_url="", products_sync_auth="")
+        if os.path.exists(products.PATH()):
+            os.remove(products.PATH())
+
+
+def test_ip_allowlist():
+    assert users.ip_allowed("10.1.2.3", "10.0.0.0/8") and not users.ip_allowed("11.0.0.1", "10.0.0.0/8")
+    assert users.ip_allowed("127.0.0.1", "10.0.0.0/8") and users.ip_allowed("8.8.8.8", "")
+    set_st(admin_networks="10.0.0.0/8")
+    try:
+        with TestClient(app, base_url="http://testserver") as c:            # адрес клиента — «testclient»
+            assert login(c, "admin", "тест-пароль").status_code == 303
+            assert c.get("/jobs").status_code == 200
+            assert c.get("/settings").status_code == 403
+    finally:
+        set_st(admin_networks="")
+
+
+def test_control_and_bitrix(admin, tmp_path, mock_srv, monkeypatch):
+    pdf = make_pdf(str(tmp_path / "Контроль.pdf"), pages=1)
+    jid = upload(admin, pdf, "Контроль.pdf")
+    assert wait(admin, jid)["status"] == "done"
+    page = admin.get("/control")
+    assert page.status_code == 200 and f"/job/{jid}" in page.text
+    set_st(bitrix_webhook="https://example.bitrix24.ru/rest/1/abc/", bitrix_default_responsible=0)
+    from app import control
+    real = control._b24
+
+    def fake(st, method, payload):
+        import httpx
+        r = httpx.post(f"{mock_srv}/rest/{method}.json", json=payload, timeout=5)
+        return r.json()["result"]
+    monkeypatch.setattr(control, "_b24", fake)
+    try:
+        users.save("avtor_b24", "Автор", "author", "Parol12345", email="a@example.com")
+        core.update_job(jid, owner="avtor_b24")
+        r = admin.post(f"/job/{jid}/bitrix", headers=O).json()
+        assert r["ok"] and "501" in r["answer"], r
+        post = [c for c in _Srv.calls if c[0] == "POST" and "tasks.task.add" in c[1]][-1][2]
+        assert post["fields"]["RESPONSIBLE_ID"] == 7 and f"/job/{jid}" in post["fields"]["DESCRIPTION"]
+        assert control.bitrix_task_of(jid)["task"] == 501
+    finally:
+        monkeypatch.setattr(control, "_b24", real)
+        set_st(bitrix_webhook="")

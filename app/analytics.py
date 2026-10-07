@@ -16,7 +16,7 @@ from . import core
 from .pipeline.common import AUTHOR, TYPES
 from .pipeline.exports import safe
 
-STATS_VERSION = 5
+STATS_VERSION = 6
 
 # правило → (название, источник, ключ настройки)
 RULES = {
@@ -68,7 +68,7 @@ STATUS = {"accepted": "Принято", "rejected": "Отклонено", "new":
 PREFLIGHT = [("fonts", "Шрифты не встроены"), ("low_dpi", "Изображения ниже порога dpi"),
              ("scans", "Страницы без текстового слоя"), ("placeholders", "Серые заглушки"),
              ("empty", "Пустые страницы"), ("sizes", "Разные форматы страниц"),
-             ("style", "Нарушения стандарта оформления"), ("products", "Расхождения со справочником продукции")]
+             ("curves", "Текст в кривых"), ("style", "Нарушения стандарта оформления"), ("products", "Расхождения со справочником продукции")]
 
 
 _learn_cache = {}
@@ -146,6 +146,7 @@ def _stats_from_state(state):
         "placeholders": len(pf.get("placeholders") or []),
         "empty": len(pf.get("empty") or []),
         "sizes": 1 if len(pf.get("page_sizes") or {}) > 1 else 0,
+        "curves": len(pf.get("curves") or []),
         "style": len((state.get("style") or {}).get("issues") or []) if (state.get("style") or {}).get("configured") else 0,
         "products": len((state.get("products") or {}).get("issues") or []),
     }
@@ -746,9 +747,10 @@ def trends(q):
     # корзины
     buckets = []
     b = bucket_of(f["from"], gran)
-    while b <= f["to"] and len(buckets) < 800:
+    while b <= f["to"]:
         buckets.append(b)
         b = bucket_next(b, gran)
+    buckets = buckets[-800:]                    # длинный период по дням: отбрасываются самые старые, а не свежие
     idx = {bk: i for i, bk in enumerate(buckets)}
     groups = [[] for _ in buckets]
     for s in docs:

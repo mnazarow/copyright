@@ -54,10 +54,13 @@ def hunspell(idx, st, log=print):
         return []
     d = st.get("hunspell_dict") or "ru_RU"
     try:
-        r = subprocess.run(["hunspell", "-d", d, "-a"], input="\n".join(words), capture_output=True,
-                           text=True, timeout=120)
+        r = subprocess.run(["hunspell", "-i", "utf-8", "-d", d, "-a"], input="\n".join(words), capture_output=True,
+                           text=True, encoding="utf-8", timeout=120)
     except Exception as e:  # noqa
         log(f"Hunspell: ошибка запуска: {e}")
+        return []
+    if r.returncode != 0 or (not r.stdout.strip() and r.stderr.strip()):
+        log(f"Hunspell: словарь «{d}» недоступен или ошибка: {(r.stderr or '').strip()[:200]}")
         return []
     bad = {}
     for line in r.stdout.splitlines():

@@ -1,0 +1,38 @@
+{% extends "base.html" %}{% block title %}Контроль разбора{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Контроль разбора</h1>
+  <p class="muted" style="max-width:820px;margin-top:-6px">Готовые отчеты, в которых остались замечания без отметки ✓ или ✕.
+  Пока замечания не разобраны, автор не знает, что исправлять, а отчет не попадает в точность аналитики.
+  Красным — дольше {{ data.kpi.warn_days }} дн. (настройка «Напоминать через, дней»).</p>
+  <div class="kpis">
+    <div class="kpi"><b>{{ data.kpi.docs }}</b><span>Документов ждут разбора</span></div>
+    <div class="kpi"><b>{{ data.kpi.findings }}</b><span>Замечаний без отметки</span></div>
+    <div class="kpi"><b class="{{ 'bad-t' if data.kpi.overdue }}">{{ data.kpi.overdue }}</b><span>Просрочено</span></div>
+    <div class="kpi"><b>{{ (data.kpi.oldest|round(0)|int) }}</b><span>Самый старый, дней</span></div>
+  </div>
+  {% if data.depts|length > 1 %}
+  <div class="card" style="margin-bottom:20px;overflow:auto"><h3>По отделам</h3>
+    <table class="t compact"><tr><th>Отдел</th><th>Документов</th><th>Замечаний без отметки</th><th>Просрочено</th><th>Самый старый, дн.</th></tr>
+    {% for d in data.depts %}<tr><td><a href="/control?department={{ (d.label if d.label != 'не указан' else '')|urlencode }}">{{ d.label }}</a></td>
+      <td>{{ d.docs }}</td><td>{{ d.findings }}</td><td>{{ d.overdue }}</td><td>{{ d.oldest|round(0)|int }}</td></tr>{% endfor %}</table></div>{% endif %}
+  {% if department %}<p>Отдел: <b>{{ department }}</b> · <a href="/control">все отделы</a></p>{% endif %}
+  <div class="card" style="overflow:auto;padding:0">
+  {% if data.rows %}
+  <table class="t compact" id="ctl-table"><tr><th>Документ</th><th>Автор · отдел</th><th>Без отметки</th><th>Разобрано</th><th>Готов, дн.</th><th>Корректоры отдела</th><th></th></tr>
+  {% for r in data.rows %}
+  <tr>
+    <td><a href="/job/{{ r.id }}">{{ r.name }}</a>{% if r.doc_type %} <span class="badge grey">{{ r.doc_type }}</span>{% endif %}
+      {% if not r.verify_ok %}<br><span class="badge warn">отчет не принят</span>{% endif %}</td>
+    <td class="small">{{ r.author or r.owner or '—' }}{% if r.department %}<br><span class="muted">{{ r.department }}</span>{% endif %}</td>
+    <td><b>{{ r.new }}</b> из {{ r.total }}</td>
+    <td><div class="bar" title="{{ r.done_share }} %"><i style="width:{{ r.done_share }}%"></i></div></td>
+    <td class="{{ 'bad-t' if r.overdue }}">{{ r.age|round(0)|int if r.age is not none else '—' }}</td>
+    <td class="small">{{ r.correctors|join(', ') or '—' }}{% if r.reminded %}<br><span class="muted">напоминали {{ r.reminded }}</span>{% endif %}</td>
+    <td class="nowrap">{% if can('review') %}<button type="button" class="btn ghost small" onclick="testConn('/control/remind/{{ r.id }}', this)">Напомнить</button><span class="muted small"></span>
+      {% if bitrix %}<br><button type="button" class="btn ghost small" onclick="testConn('/job/{{ r.id }}/bitrix', this)">Задача в Б24</button><span class="muted small"></span>{% endif %}{% endif %}</td>
+  </tr>{% endfor %}</table>
+  {% else %}<p style="padding:20px">Все замечания разобраны — ждать нечего.</p>{% endif %}
+  </div>
+</div></section>
+{% endblock %}

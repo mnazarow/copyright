@@ -17,6 +17,7 @@ PREP = set("в во на за к ко с со о об обо от ото по д
 UNION = set("и а но да или либо что чтобы как если чем то тоже также причем притом зато однако когда пока хотя будто словно точно".split())
 PART = set("не ни же ли бы б ведь вот вон лишь только именно даже уж уже".split())
 STOP = PREP | UNION | PART
+CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # управляющие знаки из PDF ломают DOCX/XLSX
 CLAUSE = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+|\d{1,2})\s*[.\t]")
 
 def kind(ch):
@@ -136,7 +137,7 @@ for pno, page in enumerate(doc, 1):
         bl = merge_baseline(b.get("lines", []))
         for li, ln in enumerate(bl):
             x0, y0, x1, y1 = ln["bbox"]
-            txt = "".join(s["text"] for s in ln["spans"]).rstrip()
+            txt = CTRL.sub("", "".join(s["text"] for s in ln["spans"])).rstrip()
             if not txt.strip(): continue
             if y1 < h * 0.08: head.append(txt); continue
             if y0 > h * 0.92: foot.append(txt); continue
@@ -244,10 +245,32 @@ for pno, page in enumerate(doc, 1):
 # --- содержание и ссылки «стр. N» (п. 3.4.2) ---
 toc_issues, page_refs = [], []
 heads = {p["pdf_page"]: " ".join(p["head"] + [ln["text"] for ln in p["lines"][:6]]) for p in pages}
+class _Toc:
+    def __init__(self, title, num):
+        self.g = (None, title, num)
+
+    def group(self, i):
+        return self.g[i]
+
+
+def toc_match(text):
+    """Строка содержания «Заголовок …… 12» — разбор без регулярного выражения с возвратами
+    (на строках с сотнями пробелов прежнее выражение работало секундами)."""
+    t = text.rstrip()
+    m = re.search(r"(\d{1,3})$", t)
+    if not m or (m.start() and t[m.start() - 1].isdigit()):
+        return None
+    head = t[:m.start()]
+    title = head.rstrip(".\u2026\ufffd·_ \t")
+    if len(head) - len(title) < 3 or len(title.strip()) < 4:
+        return None
+    return _Toc(title.strip(), m.group(1))
+
+
 for p in pages:
     toc = []
     for ln in p["lines"]:
-        m = re.match(r"^\s*(.{4,}?)\s*[.\u2026\ufffd·_ ]{3,}\s*(\d{1,3})\s*$", ln["text"])
+        m = toc_match(ln["text"])
         if m:
             toc.append(m)
     titles = [re.sub(r"[^\w()/«» -]+", "", m.group(1)).strip(" .") for m in toc]

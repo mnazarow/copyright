@@ -9,6 +9,7 @@ import os
 import re
 import asyncio
 import hmac
+from html import escape as html_escape
 import secrets
 import time
 import zipfile
@@ -28,7 +29,7 @@ from . import batch as batchmod
 from . import core
 from .pipeline import office, run
 from .pipeline.common import AUTHOR, TYPES
-from .settings_schema import CHECK_GROUPS, DEFAULTS, GROUPS, PROFILES, S, SCHEMA, profile_values
+from .settings_schema import DEFAULTS, GROUPS, PROFILES, S, SCHEMA, profile_overrides
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
@@ -58,7 +59,8 @@ DOC_PAGES = [
     ("api", "REST API и интеграция"),
     ("faq", "Вопросы и неполадки"),
 ]
-PUBLIC = ("/login", "/static", "/api/health", "/docs-files")
+PUBLIC = ("/login", "/static", "/api/health")
+SETUP_2FA_OK = ("/account", "/logout", "/static", "/login")      # пока обязательный второй фактор не подключен
 
 
 # ------------------------------------------------------------------ доступ
@@ -93,6 +95,17 @@ def same_origin(request: Request):
 async def guard(request: Request, call_next):
     path = request.url.path
     request.state.user = None
+    st_ = core.load_settings()
+    if path != "/api/health" and (st_.get("allowed_networks") or st_.get("admin_networks")):
+        ip = users.client_ip(request)
+        if not users.ip_allowed(ip, st_.get("allowed_networks")) or (
+                path.startswith(users.ADMIN_PATHS) and not users.ip_allowed(ip, st_.get("admin_networks"))):
+            core.log.warning("доступ запрещен: %s %s", ip, path)
+            msg = f"Доступ с адреса {ip} запрещен настройками сервиса (разрешенные сети). Обратитесь к администратору."
+            if path.startswith("/api/"):
+                return JSONResponse({"error": msg}, status_code=403)
+            return HTMLResponse(f"<!doctype html><meta charset='utf-8'><title>Доступ запрещен</title>"
+                                f"<p style='font:16px Arial;margin:40px'>{html_escape(msg)}</p>", status_code=403)
     if path.startswith(PUBLIC) or path == "/metrics":
         return await call_next(request)
     user, how = authed(request)
@@ -101,9 +114,15 @@ async def guard(request: Request, call_next):
             return JSONResponse({"error": "требуется авторизация"}, status_code=401)
         return RedirectResponse("/login?next=" + quote(path), status_code=303)
     request.state.user = user
+    if how == "cookie" and not path.startswith(SETUP_2FA_OK) and totp.required(user, core.load_settings()) \
+            and not totp.enabled(user["login"]):
+        # обязательный второй фактор включили, когда сеанс уже был открыт: сначала подключить
+        if path.startswith("/api/") or request.method != "GET":
+            return JSONResponse({"error": "подключите двухфакторный вход в профиле"}, status_code=403)
+        return RedirectResponse("/account/2fa?required=1", status_code=303)
     if core.PAUSED.is_set() and request.method not in ("GET", "HEAD", "OPTIONS"):
         return JSONResponse({"error": "идет восстановление из резервной копии — повторите через минуту"}, status_code=503)
-    if request.method not in ("GET", "HEAD", "OPTIONS") and how == "cookie" and not same_origin(request):
+    if request.method not in ("GET", "HEAD", "OPTIONS") and how != "token" and not same_origin(request):
         return JSONResponse({"error": "запрос с чужой страницы отклонен"}, status_code=403)
     # номера заданий — только в каноническом виде (FastAPI принял бы и «+1», «1.0», « 1» — обход проверок)
     m = users.JOB_PATH.match(path)
@@ -156,6 +175,10 @@ def _take_attempt(keys_limits):
         if len(_fails) > 20000:                        # чистим только истекшие записи
             for k in [k for k, v in _fails.items() if v[1] < now]:   # действующие блокировки сохраняются
                 _fails.pop(k, None)
+        if len(_fails) > 50000:                        # поток незаблокированных записей — память не растет без предела
+            for k in list(_fails)[:25000]:
+                if not _fails[k][1]:
+                    _fails.pop(k, None)
         for k, lim in keys_limits:
             cnt, until = _fails.get(k, [0, 0])
             if until and until <= now:
@@ -182,8 +205,10 @@ def _attempts(key):
 
 @app.post("/login")
 async def login(request: Request, password: str = Form(""), next: str = Form("/"), login: str = Form("")):
+    if not same_origin(request):                       # вход с чужой страницы (подмена учетной записи) — отклоняется
+        return RedirectResponse("/login?error=1", status_code=303)
     ip = users.client_ip(request) or "?"
-    key = f"{ip}|{(login or 'admin').lower()}"
+    key = f"{ip}|{(login or 'admin').strip().lower()[:64]}"
     # 5 ошибок подряд для логина — пауза 5 минут; 30 ошибок с адреса — пауза для адреса
     if not _take_attempt([(key, 5), (ip, 30)]):
         return RedirectResponse("/login?error=locked&next=" + quote(safe_next(next)), status_code=303)
@@ -248,6 +273,8 @@ def login_2fa_page(request: Request, next: str = "/", error: str = ""):
 
 @app.post("/login/2fa")
 async def login_2fa(request: Request, code: str = Form(""), next: str = Form("/")):
+    if not same_origin(request):
+        return RedirectResponse("/login?error=expired", status_code=303)
     u = _pending(request)
     if not u:
         return RedirectResponse("/login?error=expired", status_code=303)
@@ -401,8 +428,7 @@ async def _create_jobs(request, files, profile="", mode="", note="", author="", 
     limit = int(st.get("max_upload_mb") or 200) * 1024 * 1024
     over = {}
     if profile and profile in PROFILES:
-        over.update({k: v for k, v in profile_values(profile).items() if SCHEMA[k]["group"] in CHECK_GROUPS
-                     and k not in ("ai_api_key", "api_token")})
+        over.update(profile_overrides(profile))
         over = {k: v for k, v in over.items() if v != st.get(k)}
     if mode:
         over["mode"] = mode
@@ -415,17 +441,29 @@ async def _create_jobs(request, files, profile="", mode="", note="", author="", 
     bid = core.new_batch_id()
     ids = []
     total = 0
-    for f in files:
-        name = os.path.basename(f.filename or "document.pdf")
-        if f.size is not None and f.size > limit:          # отказ до чтения файла в память
-            raise HTTPException(413, f"Файл {name} больше {st.get('max_upload_mb')} МБ")
-        data = await f.read(limit + 1)
-        if len(data) > limit:
-            raise HTTPException(413, f"Файл {name} больше {st.get('max_upload_mb')} МБ")
-        total += len(data)
-        if total > limit * 3:
-            raise HTTPException(413, f"За одну загрузку — не больше {limit * 3 // 2**20} МБ")
-        ids += await run_in_threadpool(_store_upload, bid, name, data, over, limit, meta, bool(st.get("office_convert", True)))
+    if len(files) > 200:
+        raise HTTPException(413, "За одну загрузку — не больше 200 файлов")
+    budget = {"bytes": limit * 3, "jobs": 200}             # на весь запрос, включая содержимое архивов
+    try:
+        for f in files:
+            name = os.path.basename(f.filename or "document.pdf")
+            if f.size is not None and f.size > limit:      # отказ до чтения файла в память
+                raise HTTPException(413, f"Файл {name} больше {st.get('max_upload_mb')} МБ")
+            data = await f.read(limit + 1)
+            if len(data) > limit:
+                raise HTTPException(413, f"Файл {name} больше {st.get('max_upload_mb')} МБ")
+            total += len(data)
+            if total > limit * 3:
+                raise HTTPException(413, f"За одну загрузку — не больше {limit * 3 // 2**20} МБ")
+            ids += await run_in_threadpool(_store_upload, bid, name, data, over, limit, meta,
+                                           bool(st.get("office_convert", True)), budget, ids)
+    except BaseException:
+        for jid in ids:                                    # загрузка прервана — уже созданные задания убираются
+            try:
+                core.delete_job(jid)
+            except Exception:  # noqa
+                pass
+        raise
     if ids:
         users.audit(request, "upload", ", ".join(map(str, ids)), {"files": len(files), "author": author,
                                                                    "department": department, "type": doc_type})
@@ -433,20 +471,29 @@ async def _create_jobs(request, files, profile="", mode="", note="", author="", 
     return ids
 
 
-def _store_upload(bid, name, data, over, limit, meta=None, office_ok=True):
-    """Сохраняет PDF (или документ Word/ODT/RTF, а также файлы из ZIP) как задания. Выполняется в пуле потоков."""
-    ids = []
+def _store_upload(bid, name, data, over, limit, meta=None, office_ok=True, budget=None, created=None):
+    """Сохраняет PDF (или документ Word/ODT/RTF, а также файлы из ZIP) как задания. Выполняется в пуле потоков.
+    budget — общий на запрос остаток распакованных байт и заданий; created — список, куда сразу пишутся номера
+    (для отката при ошибке на середине)."""
+    ids = created if created is not None else []
+    start = len(ids)
     meta = meta or {}
+    budget = budget if budget is not None else {"bytes": limit * 3, "jobs": 200}
 
     def add(fname, blob, ext="pdf"):
+        budget["bytes"] -= len(blob)
+        budget["jobs"] -= 1
+        if budget["bytes"] < 0 or budget["jobs"] < 0:
+            raise HTTPException(413, f"За одну загрузку — не больше {limit * 3 // 2**20} МБ после распаковки и "
+                                     "не больше 200 документов")
         stem = re.sub(r"\.(pdf|docx?|odt|rtf)$", "", fname, flags=re.I)
         jid = core.create_job(bid, stem, fname, len(blob), over, **meta)
         d = core.job_dir(jid)
         os.makedirs(d, exist_ok=True)
+        ids.append(jid)
         with open(os.path.join(d, "source." + ext), "wb") as fh:
             fh.write(blob)
         core.update_job(jid, status="queued", step="В очереди" if ext == "pdf" else "В очереди (будет преобразован в PDF)")
-        ids.append(jid)
 
     def take(fname, blob):
         if blob[:5] == b"%PDF-":
@@ -473,7 +520,7 @@ def _store_upload(bid, name, data, over, limit, meta=None, office_ok=True):
                 take(os.path.basename(zi.filename), blob)
     else:
         take(name, data)
-    return ids
+    return ids[start:] if created is None else []
 
 
 @app.get("/jobs", response_class=HTMLResponse)
@@ -537,11 +584,12 @@ def job_page_img(jid: int, n: int):
             raise HTTPException(404)
         try:
             import pymupdf
+            from .pipeline.common import safe_dpi
             with pymupdf.open(src) as d:
                 if n > d.page_count:
                     raise HTTPException(404)
                 os.makedirs(os.path.dirname(p), exist_ok=True)
-                d[n - 1].get_pixmap(dpi=int(core.load_settings().get("page_images_dpi") or 72)).save(p + ".tmp.png")
+                d[n - 1].get_pixmap(dpi=safe_dpi(d[n - 1], int(core.load_settings().get("page_images_dpi") or 72))).save(p + ".tmp.png")
                 os.replace(p + ".tmp.png", p)
         except HTTPException:
             raise
@@ -651,6 +699,7 @@ def job_restart(request: Request, jid: int):
             if not fn.startswith("source.") and os.path.isfile(p):
                 os.remove(p)
         core.update_job(jid, status="queued", progress=0, step="В очереди", error="")
+    analytics.decisions_changed()                      # решения этого задания больше не участвуют в обучении
     core.kick()
     return RedirectResponse(f"/job/{jid}", status_code=303)
 
@@ -663,7 +712,7 @@ def health():
 
 @app.get("/api/jobs")
 def api_jobs(request: Request):
-    return core.list_jobs(200, owner=users.own_only(request.state.user))
+    return [{k: v for k, v in j.items() if k != "settings"} for j in core.list_jobs(200, owner=users.own_only(request.state.user))]
 
 
 @app.post("/api/jobs")
@@ -956,9 +1005,7 @@ def settings_page(request: Request, saved: int = 0, applied: str = "", bsaved: s
                   psaved: str = "", perror: str = ""):
     st = core.load_settings()
     if applied and applied in PROFILES:
-        keep = ("ai_api_key", "ai_provider", "ai_base_url", "ai_model")
-        st.update({k: v for k, v in profile_values(applied).items()
-                   if SCHEMA[k]["group"] in CHECK_GROUPS and k not in keep})
+        st.update(profile_overrides(applied))
     prompt_info = run_prompt_info()
     from . import backup as _bk
     bstat, blist = _bk.status(), _bk.listing(st)
@@ -973,10 +1020,10 @@ def _products_info():
     from .pipeline import products
     ref = products.load(products.PATH())
     if not ref:
-        return None
+        return {"items": 0, "sync": products.sync_status()} if products.sync_status() else None
     t = os.path.getmtime(products.PATH())
     return {"file": ref.get("file"), "items": len(ref.get("items") or {}), "units": ref.get("units") or {},
-            "time": dt.datetime.fromtimestamp(t).strftime("%d.%m.%Y %H:%M")}
+            "time": dt.datetime.fromtimestamp(t).strftime("%d.%m.%Y %H:%M"), "sync": products.sync_status()}
 
 
 def run_prompt_info():

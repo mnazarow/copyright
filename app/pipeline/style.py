@@ -64,7 +64,7 @@ def check(pdf_path, st):
     allowed_f, allowed_c, sizes = _allowed_fonts(st), _allowed_colors(st), _sizes(st)
     min_size = float(st.get("style_min_size") or 0)
     margin = float(st.get("style_margin_mm") or 0) * 72 / 25.4
-    tol_c = float(st.get("style_color_tolerance") or 40)
+    tol_c = float(st.get("style_color_tolerance") if st.get("style_color_tolerance") is not None else 40)
     max_fonts = int(st.get("style_max_fonts") or 0)
     fonts, colors, ksizes = Counter(), Counter(), Counter()
     font_names = defaultdict(set)

@@ -438,6 +438,8 @@ def start_workers():
     threading.Thread(target=notify.remind_loop, daemon=True).start()
     from . import report_pdf
     report_pdf.start()
+    from .pipeline import products
+    threading.Thread(target=products.sync_loop, args=(load_settings, log), daemon=True).start()
     threading.Thread(target=backup.loop, daemon=True).start()
 
 

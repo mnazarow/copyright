@@ -53,7 +53,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; PORT_SET=1; shift 2;;
     --listen) LISTEN="$2"; LISTEN_SET=1; shift 2;;
-    --password) PASSWORD="$2"; shift 2;;
+    --password) PASSWORD="$2"; shift 2
+                case "$PASSWORD" in *[[:space:]]*|*\"*|*\'*|*\$*|*\`*|*\\*) echo "Пароль не должен содержать пробелы, кавычки, \$, \` и \\"; exit 1;; esac;;
     --with-nginx) WITH_NGINX=1; shift;;
     --domain) DOMAIN="$2"; shift 2;;
     --with-ocr) WITH_OCR=1; shift;;
@@ -300,6 +301,14 @@ cat >/usr/local/bin/korrektor <<'EOF'
 APP=korrektor; ENVF=/etc/korrektor/korrektor.env; DATA=/var/lib/korrektor; PREFIX=/opt/korrektor
 need_root() { [ "$(id -u)" -eq 0 ] || { echo "Нужны права администратора: sudo korrektor $*"; exit 1; }; }
 port() { grep '^KORREKTOR_PORT=' $ENVF 2>/dev/null | cut -d= -f2; }
+# python программы от имени службы; переменные — из файла (не в командной строке: их не видно в ps)
+py() {
+  if command -v runuser >/dev/null; then
+    runuser -u $APP -- sh -c 'set -a; . "$0"; set +a; cd /opt/korrektor && exec /opt/korrektor/venv/bin/python "$@"' $ENVF "$@"
+  else
+    sudo -u $APP sh -c 'set -a; . "$0"; set +a; cd /opt/korrektor && exec /opt/korrektor/venv/bin/python "$@"' $ENVF "$@"
+  fi
+}
 case "${1:-help}" in
   status)  systemctl status $APP --no-pager; echo; curl -s "http://127.0.0.1:$(port)/api/health"; echo;;
   start|stop|restart) need_root "$@"; systemctl "$1" $APP && echo "Готово: $1";;
@@ -313,15 +322,15 @@ case "${1:-help}" in
              && systemctl restart $APP
            echo "Новый пароль администратора: $P";;
   password) need_root "$@"; grep '^KORREKTOR_ADMIN_PASSWORD=' $ENVF | cut -d= -f2-;;
-  backup)  need_root "$@"; cd $PREFIX && sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup backup;;
+  backup)  need_root "$@"; py -m app.backup backup;;
   verify)  need_root "$@"; [ -f "$2" ] || { echo "Укажите файл: sudo korrektor verify /var/backups/korrektor/....tgz"; exit 1; }
-           cd $PREFIX && env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup verify "$2";;
+           chgrp $APP "$2" 2>/dev/null; chmod g+r "$2" 2>/dev/null; py -m app.backup verify "$(readlink -f "$2")";;
   restore) need_root "$@"; [ -f "$2" ] || { echo "Укажите файл: sudo korrektor restore /var/backups/korrektor/....tgz [--with-env]"; exit 1; }
            chgrp $APP "$2" 2>/dev/null; chmod g+r "$2" 2>/dev/null   # служба читает копию от своего имени
-           cd $PREFIX && sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup verify "$(readlink -f "$2")" >/dev/null \
+           py -m app.backup verify "$(readlink -f "$2")" >/dev/null \
              || { echo "Копия не прошла проверку: sudo korrektor verify $2"; exit 1; }
            systemctl stop $APP
-           sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.backup restore "$(readlink -f "$2")"; RC=$?
+           py -m app.backup restore "$(readlink -f "$2")"; RC=$?
            if [ "${3:-}" = "--with-env" ]; then
              T=$(mktemp -d); tar xzf "$2" -C "$T" etc/korrektor.env etc/korrektor/korrektor.env 2>/dev/null
              for E in "$T/etc/korrektor.env" "$T/etc/korrektor/korrektor.env"; do [ -f "$E" ] && install -m 640 -o root -g $APP "$E" $ENVF && echo "Файл настроек службы восстановлен"; done
@@ -329,7 +338,7 @@ case "${1:-help}" in
            fi
            chown -R $APP:$APP $DATA; systemctl start $APP; [ $RC -eq 0 ] && echo "Восстановлено из $2";;
   2fa-off) need_root "$@"; [ -n "${2:-}" ] || { echo "Укажите логин: sudo korrektor 2fa-off admin"; exit 1; }
-           cd $PREFIX && sudo -u $APP env $(grep -v '^#' $ENVF | xargs) $PREFIX/venv/bin/python -m app.totp off "$2";;
+           py -m app.totp off "$2";;
   update)  need_root "$@"; shift; bash $PREFIX/scripts/update.sh "$@";;
   uninstall) need_root "$@"; shift; bash $PREFIX/scripts/uninstall.sh "$@";;
   version) cat $PREFIX/VERSION;;

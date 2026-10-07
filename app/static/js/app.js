@@ -171,7 +171,8 @@ async function testLdap(btn) {
   out.textContent = r.ok ? '✅ ' + r.answer : '❌ ' + r.error;
 }
 async function testConn(url, btn) {
-  const out = btn.nextElementSibling; out.textContent = 'Проверка… (сначала сохраните настройки)';
+  const out = btn.nextElementSibling;
+  out.textContent = url.startsWith('/settings/test') ? 'Проверка… (сначала сохраните настройки)' : 'Выполняется…';
   const r = await fetch(url, {method: 'POST'}).then(x => x.json()).catch(e => ({ok: false, error: String(e)}));
   out.textContent = r.ok ? '✅ ' + (r.answer || 'связь есть') : '❌ ' + r.error;
 }

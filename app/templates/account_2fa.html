@@ -9,6 +9,7 @@
 {% endfor %}</pre>
     <p><a class="btn" href="/account">Готово</a></p>
   {% else %}
+    {% if required %}<div class="notice warn">Администратор сделал двухфакторный вход обязательным для вашей роли. Подключите его, чтобы продолжить работу.</div>{% endif %}
     <p>Установите на телефон приложение-аутентификатор (Яндекс Ключ, Google Authenticator, Microsoft Authenticator,
     FreeOTP), отсканируйте код и введите шесть цифр из приложения. После этого при входе, кроме пароля, нужен будет код.</p>
     {% include "_totp_setup.html" %}

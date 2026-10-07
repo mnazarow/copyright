@@ -195,8 +195,17 @@ def job_event(jid):
         core.log.exception("уведомление по заданию %s", jid)
 
 
+def _after_job(jid):
+    job_event(jid)
+    try:
+        from . import control
+        control.bitrix_on_job(jid)
+    except Exception:  # noqa
+        core.log.exception("Битрикс24 по заданию %s", jid)
+
+
 def job_event_async(jid):
-    threading.Thread(target=job_event, args=(jid,), daemon=True).start()
+    threading.Thread(target=_after_job, args=(jid,), daemon=True).start()
 
 
 def _html(text, url=None, button=None):
@@ -263,20 +272,20 @@ def digest_loop():
 REMIND_FILE = os.path.join(core.DATA, ".remind.json")
 
 
-def pending_reviews(st, now=None):
+def pending_reviews(st, now=None, only=None):
     """Готовые отчеты с замечаниями без отметки дольше remind_days (и не старше remind_max_days).
     → [{job, name, owner, author, department, pending, days, url}]"""
     now = now or dt.datetime.now()
     days, maxd = int(st.get("remind_days") or 3), int(st.get("remind_max_days") or 30)
     out = []
-    for j in core.list_jobs(100000):
-        if j["status"] != "done" or not j.get("finished"):
+    for j in ([core.get_job(only)] if only else core.list_jobs(100000)):
+        if not j or j["status"] != "done" or not j.get("finished"):
             continue
         try:
             age = (now - dt.datetime.fromisoformat(j["finished"][:19])).total_seconds() / 86400
         except ValueError:
             continue
-        if age < days or age > maxd:
+        if not only and (age < days or age > maxd):    # ручное напоминание по документу — без порогов
             continue
         state = core.load_state(j["id"]) or {}
         n = sum(1 for f in state.get("findings", []) if f.get("status", "new") == "new")
@@ -296,15 +305,15 @@ def _correctors_of(dept):
             and (u.get("department") or "").strip().lower() == d and users.EMAIL_RE.match(u.get("email") or "")]
 
 
-def send_reminders(st, force=False):
-    """→ сводка: сколько документов, писем, итог по каналам."""
+def send_reminders(st, force=False, only=None):
+    """→ сводка: сколько документов, писем, итог по каналам. only — номер одного задания (кнопка «Напомнить»)."""
     try:
         sent = json.load(open(REMIND_FILE, encoding="utf-8"))
     except (OSError, ValueError):
         sent = {}
     today = dt.date.today()
     every = int(st.get("remind_days") or 3)
-    items = [p for p in pending_reviews(st) if force or not sent.get(str(p["job"]))
+    items = [p for p in pending_reviews(st, only=only) if force or not sent.get(str(p["job"]))
              or (today - dt.date.fromisoformat(sent[str(p["job"])])).days >= every]
     if not items:
         return {"docs": 0, "letters": 0, "result": {}}

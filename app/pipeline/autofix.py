@@ -67,8 +67,9 @@ def typography(idx, st):
         H += rule_regex(idx, "dspace", r"([^\s=])[  ]{2,}([^\s=])", r"\1 \2", "Типографика",
                         "Двойной пробел между словами.")
     if st.get("typo_degree"):
-        H += rule_regex(idx, "degree", r"(\d)?(\s*)[\u02da\u00ba]\s*([CС]?)",
-                        lambda m: (m.group(1) + " " if m.group(1) else m.group(2)) + "\u00b0" + (m.group(3) or ""),
+        H += rule_regex(idx, "degree", r"(\d)?(\s*)[\u02da\u00ba](?:\s*([CС])(?![\wА-яЁё]))?",
+                        lambda m: ((m.group(1) + " " if m.group(1) else m.group(2)) + "\u00b0" + m.group(3)) if m.group(3)
+                        else (m.group(1) or "") + m.group(2) + "\u00b0",
                         "Типографика", "Вместо знака градуса ° (U+00B0) стоит кольцо ˚ или индикатор º; "
                                        "между числом и «°С» нужен пробел (п. 5.3).")
     if st.get("typo_quotes"):
@@ -105,7 +106,7 @@ def typography(idx, st):
                         "(1200, но 12 000).")
     # десятичный разделитель
     if st.get("decimal_separator", "comma") == "comma":
-        H += rule_regex(idx, "decimal", r"(?<![\d.])(\d+)\.(\d{1,3})(?=\s?(?:мм|см|м|кг|кВт|Вт|бар|МПа|л|%|°))",
+        H += rule_regex(idx, "decimal", r"(?<![\d.])(\d+)\.(\d{1,3})(?=\s?(?:(?:мм|см|м|кг|кВт|Вт|бар|МПа|л)(?![\wА-яЁё])|%|°))",
                         r"\1,\2", "Типографика", "В русском тексте десятичный разделитель — запятая.")
     # стандарты
     if st.get("check_standards"):
@@ -463,8 +464,9 @@ def dedupe(findings):
     seen, out = {}, []
     for f in findings:
         k = norm(f["src"]).lower()
-        if k in seen and seen[k]["page"] == f["page"] and f.get("rule") != seen[k].get("rule"):
-            if merge_same_place(seen[k], f):
+        if k in seen and seen[k]["page"] == f["page"] and (f.get("rule") != seen[k].get("rule")
+                                                            or f.get("bad") not in seen[k].get("bad", "")):
+            if merge_same_place(seen[k], f):           # второй дефект в той же строке (в т. ч. то же правило)
                 continue
         if k in seen:
             g = seen[k]
