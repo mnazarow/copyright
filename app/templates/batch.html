@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block title %}Пакет документов{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Пакет документов</h1>
+  <p class="muted">Документы, загруженные вместе. После проверки всех документов сервис сравнивает версии одного
+  документа и сверяет реквизиты между документами (п. 3.8 и 5.15 мастер-промпта).</p>
+  {% include "_jobs_table.html" %}
+  {% if res %}
+  <h2 style="margin-top:34px">Сводка по пакету</h2>
+  <table class="t"><tr><th>Документ</th><th>Страниц</th><th>Замечаний</th><th>Проверка оформления</th></tr>
+  {% for j in jobs %}<tr><td><a href="/job/{{ j.id }}">{{ j.name }}</a></td><td>{{ j.pages }}</td><td>{{ j.findings }}</td>
+  <td>{% if j.verify_ok %}<span class="badge ok">{{ j.verify_score }} PASS</span>{% else %}<span class="badge bad">{{ j.verify_score }}</span>{% endif %}</td></tr>{% endfor %}</table>
+
+  <h2 style="margin-top:34px">Версии одного документа</h2>
+  {% if not res.groups %}<p class="muted">Версий одного документа в пакете не найдено.</p>{% endif %}
+  {% for g in res.groups %}<div class="card" style="margin-bottom:16px">
+    <h3>Базовый документ: {{ g.base_name }}</h3>
+    {% for o in g.others %}<details><summary>{{ o.name }}: различаются стр. {{ o.pages|map(attribute='page')|join(', ') }}</summary>
+      {% for p in o.pages %}<p style="margin:10px 0 2px"><b>стр. {{ p.page }}</b></p><pre class="log">{{ p.diff|join('\n') }}</pre>{% endfor %}
+    </details>{% endfor %}
+  </div>{% endfor %}
+
+  <h2 style="margin-top:34px">Расхождения реквизитов между документами</h2>
+  {% if not res.requisites %}<p class="muted">Расхождений не найдено.</p>{% else %}
+  <table class="t"><tr><th>Документ</th><th>Стр.</th><th>Телефон / e-mail</th><th>Адрес в документе</th><th>В других документах</th></tr>
+  {% for r in res.requisites %}<tr><td><a href="/job/{{ r.job }}">{{ r.name }}</a></td><td>{{ r.page }}</td><td>{{ r.key }}</td>
+    <td>{{ r.address }}</td><td>{{ r.others|join('; ') }}</td></tr>{% endfor %}</table>
+  <p class="muted">Каждое расхождение добавлено в отчет соответствующего документа как «Требует проверки автором».</p>{% endif %}
+  {% else %}<div class="notice info" style="margin-top:20px">Сводка появится, когда будут проверены все документы пакета.</div>{% endif %}
+</div></section>
+{% endblock %}
+{% block scripts %}<script>pollJobsTable(true);</script>{% endblock %}

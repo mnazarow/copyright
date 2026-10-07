@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Корректор{% endblock %} · ВОДОКОМФОРТ</title>
+<link rel="stylesheet" href="/static/css/fonts.css?v={{ version }}">
+<link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+<link rel="icon" href="/static/img/logo.svg">
+</head>
+<body>
+<div class="topbar"><div class="wrap">
+  <span>Внутренний сервис корректорской вычитки · мастер-промпт v5.7</span>
+  <span>{% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} · версия {{ version }}
+  {% if auth_on and page != 'login' %} · <a href="/logout">Выйти</a>{% endif %}</span>
+</div></div>
+<header class="header"><div class="wrap">
+  <a class="logo" href="/">
+    <img src="/static/img/logo.svg" alt="" width="38" height="38">
+    <span><span class="brand">ВОДОКОМФОРТ</span><br><span class="sub">инжиниринг</span></span>
+    <span class="sep"></span><span class="product">Корректор</span>
+  </a>
+  {% if page != 'login' %}
+  <nav class="nav">
+    <a href="/" class="{{ 'active' if page=='index' }}">Проверка</a>
+    <a href="/jobs" class="{{ 'active' if page=='jobs' }}">Задания</a>
+    <a href="/settings" class="{{ 'active' if page=='settings' }}">Настройки</a>
+    <a href="/docs" class="{{ 'active' if page=='docs' }}">Документация</a>
+    <a href="/docs/methodology">Методология</a>
+  </nav>
+  <a class="btn" href="/#upload">Проверить документ</a>
+  {% endif %}
+</div></header>
+<main>{% block body %}{% endblock %}</main>
+<footer class="footer"><div class="wrap">
+  <div><div class="brand">ВОДОКОМФОРТ · КОРРЕКТОР</div>
+  <p>Проверка PDF-документов по мастер-промпту корректора: 8 категорий ошибок, 5 проходов вычитки,
+  отчет DOCX с машинной проверкой оформления по 25 требованиям.</p></div>
+  <div><b>Разделы</b><br><a href="/">Проверка</a><br><a href="/jobs">Задания</a><br><a href="/settings">Настройки</a></div>
+  <div><b>Справка</b><br><a href="/docs">Документация</a><br><a href="/docs/faq">Вопросы и неполадки</a><br><a href="/api/docs">REST API</a></div>
+</div></footer>
+<script src="/static/js/app.js?v={{ version }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

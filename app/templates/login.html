@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block title %}Вход{% endblock %}
+{% block body %}
+<div class="wrap"><div class="card login">
+  <h2>Вход</h2>
+  <p class="muted">Введите пароль администратора. Он был показан в конце установки и хранится в файле
+  <code>/etc/korrektor/korrektor.env</code>.</p>
+  {% if error %}<div class="notice warn">Неверный пароль.</div>{% endif %}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label class="f">Пароль</label>
+    <input type="password" name="password" autofocus>
+    <p><button class="btn" type="submit">Войти</button></p>
+  </form>
+</div></div>
+{% endblock %}

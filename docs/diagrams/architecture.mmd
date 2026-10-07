@@ -1,0 +1,12 @@
+flowchart TB
+  U[Пользователь<br/>в браузере] -->|HTTP/HTTPS| N[nginx<br/>необязательно]
+  S[Другие системы<br/>СЭД, 1С, скрипты] -->|REST API + токен| N
+  N --> W[Веб-сервис Корректор<br/>FastAPI + uvicorn<br/>служба systemd]
+  W --> DB[(SQLite<br/>задания)]
+  W --> Q[Фоновые обработчики<br/>очередь заданий]
+  Q --> P[Конвейер проверки]
+  P --> FS[(Файлы заданий<br/>/var/lib/korrektor)]
+  P --> H[Hunspell<br/>словарь, локально]
+  P -.->|по желанию| LT[LanguageTool<br/>локальный сервер :8010]
+  P -.->|по желанию| AI[Языковая модель<br/>Anthropic / OpenAI-совм. / Ollama]
+  P -.->|по желанию| T[Tesseract OCR]

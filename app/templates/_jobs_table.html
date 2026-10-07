@@ -1,0 +1,19 @@
+<table class="t" id="jobs-table">
+<tr><th>№</th><th>Документ</th><th>Загружен</th><th>Страниц</th><th>Состояние</th><th>Замечаний</th><th>Проверка оформления</th></tr>
+{% for j in jobs %}
+<tr data-job="{{ j.id }}" data-status="{{ j.status }}">
+  <td>{{ j.id }}</td>
+  <td><a href="/job/{{ j.id }}">{{ j.name }}</a>{% if j.batch and jobs|selectattr('batch','equalto',j.batch)|list|length > 1 %}
+    <br><a class="muted" href="/batch/{{ j.batch }}">пакет</a>{% endif %}</td>
+  <td>{{ j.created.replace('T',' ')[:16] }}</td>
+  <td>{{ j.pages or '—' }}</td>
+  <td class="js-status">{% if j.status=='done' %}<span class="badge ok">готово</span>
+    {% elif j.status=='failed' %}<span class="badge bad" title="{{ j.error }}">ошибка</span>
+    {% elif j.status=='running' %}<span class="badge warn">идет · {{ (j.progress*100)|int }}%</span>
+    {% else %}<span class="badge grey">в очереди</span>{% endif %}</td>
+  <td>{{ j.findings if j.status=='done' else '—' }}</td>
+  <td>{% if j.status=='done' %}{% if j.verify_ok %}<span class="badge ok">{{ j.verify_score }} PASS</span>
+    {% else %}<span class="badge bad">{{ j.verify_score }} не принят</span>{% endif %}{% else %}—{% endif %}</td>
+</tr>
+{% endfor %}
+</table>

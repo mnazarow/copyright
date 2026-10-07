@@ -1,0 +1,134 @@
+{% extends "base.html" %}{% block title %}{{ job.name }}{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <div class="job-head">
+    <div>
+      <div class="muted">Задание № {{ job.id }} · загружено {{ job.created.replace('T',' ')[:16] }}{% if job.batch and bsize > 1 %} ·
+        <a href="/batch/{{ job.batch }}">весь пакет</a>{% endif %}</div>
+      <h1 style="font-size:34px;margin-top:4px">{{ job.name }}</h1>
+    </div>
+    <div class="dl">
+      <a class="btn ghost small" href="/job/{{ job.id }}/file/source">Исходный PDF</a>
+      <form method="post" action="/job/{{ job.id }}/restart" onsubmit="return confirm('Проверить документ заново с текущими настройками? Ручные отметки будут потеряны.')">
+        <button class="btn ghost small">Проверить заново</button></form>
+      <form method="post" action="/job/{{ job.id }}/delete" onsubmit="return confirm('Удалить задание и все его файлы?')">
+        <button class="btn danger small">Удалить</button></form>
+    </div>
+  </div>
+
+  {% if job.status in ('queued','running','uploading') %}
+  <div class="card" id="running" data-job="{{ job.id }}">
+    <h3 id="step">{{ job.step or 'В очереди' }}</h3>
+    <div class="progress"><i id="bar" style="width:{{ (job.progress*100)|int }}%"></i></div>
+    <p class="muted">Каталог на 50 страниц проверяется правилами за 15–40 секунд; с языковой моделью — несколько минут.
+    Страницу можно закрыть: задание продолжит выполняться.</p>
+  </div>
+  {% elif job.status == 'failed' %}
+  <div class="notice warn"><b>Проверка не выполнена.</b> {{ job.error }}<br>Подробности — в журнале ниже.
+  Частые причины описаны в разделе <a href="/docs/faq">«Вопросы и неполадки»</a>.</div>
+  {% endif %}
+
+  {% if state %}
+  {% set v = state.verify %}
+  <div class="kpis">
+    <div class="kpi"><b>{{ state.pages }}</b><span>страниц проверено</span></div>
+    <div class="kpi"><b id="k-count">{{ v.count }}</b><span>замечаний в отчете</span></div>
+    <div class="kpi"><b>{{ state.findings|selectattr('type','equalto',AUTHOR)|list|length }}</b><span>требуют решения автора</span></div>
+    <div class="kpi"><b id="k-verify" style="color:{{ '#0f8a4b' if v.ok else '#c00000' }}">{{ v.passed }}/{{ v.total }}</b>
+      <span>машинная проверка оформления {{ '— отчет принят' if v.ok else '— отчет НЕ принят' }}</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Скачать отчет</h3>
+    <div class="dl">
+      {% set files = v.files or {} %}
+      {% if files.docx %}<a class="btn" href="/job/{{ job.id }}/file/docx">Отчет DOCX</a>{% endif %}
+      {% if files.pdf_annot %}<a class="btn ghost" href="/job/{{ job.id }}/file/pdf_annot">PDF с пометками</a>{% endif %}
+      {% if files.xlsx %}<a class="btn ghost" href="/job/{{ job.id }}/file/xlsx">XLSX</a>{% endif %}
+      {% if files.csv %}<a class="btn ghost" href="/job/{{ job.id }}/file/csv">CSV</a>{% endif %}
+      {% if files.json %}<a class="btn ghost" href="/job/{{ job.id }}/file/json">findings.json</a>{% endif %}
+      <a class="btn ghost" href="/job/{{ job.id }}/zip">Все одним архивом</a>
+    </div>
+    {% if not v.ok %}<div class="notice warn" style="margin-top:14px">Отчет не прошел машинную проверку (п. 0.9 мастер-промпта),
+      поэтому DOCX не выдается. Нарушенные требования перечислены ниже: исправьте замечания (кнопка ✎) или отклоните
+      ошибочные и нажмите «Пересобрать отчет».</div>{% endif %}
+    <details style="margin-top:14px" {{ 'open' if not v.ok }}><summary>Результат 25 машинных проверок оформления</summary>
+      <div class="checks" style="margin-top:10px">{% for c in v.checks %}<div>{{ '✅' if c.ok else '❌' }} {{ c.name }}
+      {% if c.detail and not c.ok %}<span class="muted"> — {{ c.detail }}</span>{% endif %}</div>{% endfor %}</div>
+    </details>
+  </div>
+
+  {% if state.preflight and (state.preflight['items'] or state.preflight.placeholders) %}
+  <div class="card" style="margin-top:20px">
+    <h3>Технический контроль PDF</h3>
+    <ul>{% for it in state.preflight['items'] %}<li>{{ it }}</li>{% endfor %}
+    {% if state.preflight.placeholders %}<li>Серые заглушки на месте иллюстраций: стр. {{ state.preflight.placeholders|join(', ') }}</li>{% endif %}
+    </ul>
+    <p class="muted">Эти пункты не входят в таблицу замечаний (это не корректура текста), но перечислены в шапке отчета.</p>
+  </div>
+  {% endif %}
+
+  <div class="card" style="margin-top:20px">
+    <h3>Замечания</h3>
+    <p class="muted">Отметьте ✓ верные и ✕ ошибочные замечания, при необходимости поправьте текст (✎), затем нажмите
+    «Пересобрать отчет». Щелчок по номеру страницы показывает страницу документа.</p>
+    <div class="filters">
+      <select id="flt-type"><option value="">Все типы</option>{% for t in TYPES %}<option>{{ t }}</option>{% endfor %}</select>
+      <select id="flt-status"><option value="">Любое состояние</option><option value="new">не просмотрено</option>
+        <option value="accepted">принято</option><option value="rejected">отклонено</option></select>
+      <select id="flt-src"><option value="">Любой источник</option><option value="rules">правила</option>
+        <option value="spell">словарь</option><option value="ai">ИИ</option><option value="data">данные и таблицы</option></select>
+      <input type="text" id="flt-q" placeholder="Поиск по тексту">
+      <span class="muted" id="flt-n"></span>
+    </div>
+    <table class="t" id="findings">
+      <tr><th>№</th><th>Стр., пункт</th><th>Тип</th><th>Как в документе</th><th>Как правильно</th><th>Пояснение</th><th></th></tr>
+      {% for f in state.findings|sort(attribute='page') %}
+      <tr data-id="{{ f.id }}" data-type="{{ f.type }}" data-status="{{ f.status }}" data-rule="{{ f.rule }}"
+          class="{{ f.status }}">
+        <td>{{ loop.index }}</td>
+        <td><a href="#" class="pg" data-page="{{ f.page }}">стр. {{ f.page }}</a>, {{ f.clause }}</td>
+        <td>{{ f.type }}</td>
+        <td class="f-src" data-mark="{{ f.bad }}">{{ f.src }}</td>
+        <td class="f-fix" data-mark="{{ f.good }}">{{ f.fix }}</td>
+        <td class="f-note">{{ f.note }}</td>
+        <td class="acts"><button title="Принять" data-act="accepted">✓</button><button title="Отклонить" data-act="rejected">✕</button>
+          <button title="Изменить" data-act="edit">✎</button></td>
+      </tr>
+      {% endfor %}
+    </table>
+    <h3 style="margin-top:24px">Итог</h3>
+    <textarea id="summary">{{ state.meta.summary }}</textarea>
+    <p class="muted">Итог — 2–4 предложения без рекомендаций (п. 0.16); слова «рекомендуется», «следует проверить» не допускаются.</p>
+    <p><button class="btn" id="rebuild" data-job="{{ job.id }}">Пересобрать отчет</button> <span id="rebuild-msg" class="muted"></span></p>
+  </div>
+
+  <div class="grid g2" style="margin-top:20px">
+    <div class="card"><h3>Колонтитулы документа</h3>
+      <p class="muted">Проверьте глазами, что каждый колонтитул относится к своему разделу.</p>
+      <table class="t">{% for t, ps in (state.running or {}).items() %}<tr><td style="white-space:nowrap">стр. {{ ps[0] }}{% if ps|length>1 %}–{{ ps[-1] }}{% endif %}</td><td>{{ t }}</td></tr>{% endfor %}</table>
+    </div>
+    <div class="card"><h3>Шапка отчета</h3>
+      {% for h in state.meta.header_lines %}<p style="margin:4px 0">{{ h }}</p>{% endfor %}
+      <p><b>{{ state.meta.totals }}</b></p>
+      {% if state.page_refs %}<h3 style="margin-top:16px">Ссылки «см. стр.»</h3>
+      <ul>{% for r in state.page_refs %}<li>стр. {{ r.page }}: «{{ r.text }}» {% if not r.exists %}<span class="badge bad">страницы нет</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <details style="margin-top:20px"><summary>Журнал обработки</summary><pre class="log">{{ log }}</pre></details>
+</div></section>
+
+<div class="viewer" id="viewer"><div class="box"><p style="display:flex;justify-content:space-between;margin-top:0">
+  <b id="viewer-title"></b><button class="btn small ghost" onclick="closeViewer()">Закрыть</button></p><img id="viewer-img" alt=""></div></div>
+<div class="viewer" id="editor"><div class="box" style="max-width:720px">
+  <h3>Изменить замечание</h3>
+  <label class="f">Тип</label><select id="e-type">{% for t in TYPES %}<option>{{ t }}</option>{% endfor %}</select>
+  <label class="f" style="margin-top:10px">Как правильно (готовый текст для вставки)</label><textarea id="e-fix"></textarea>
+  <label class="f">Исправленный фрагмент (выделяется зеленым; должен входить в текст выше)</label><input type="text" id="e-good">
+  <label class="f" style="margin-top:10px">Пояснение</label><textarea id="e-note"></textarea>
+  <p><button class="btn" id="e-save">Сохранить</button> <button class="btn ghost" onclick="closeEditor()">Отмена</button></p>
+</div></div>
+{% endblock %}
+{% block scripts %}<script>initJob({{ job.id }});</script>{% endblock %}

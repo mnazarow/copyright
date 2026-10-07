@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block title %}{{ title }} — документация{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap docs-layout">
+  <aside class="side">{% for n,t in pages %}<a href="/docs/{{ n }}" class="{{ 'on' if n==current }}">{{ t }}</a>{% endfor %}
+    <a href="/docs/all" class="{{ 'on' if current=='all' }}">Вся документация одной страницей</a>
+    <a href="/docs-files/Корректор_документация.pdf">Скачать PDF</a></aside>
+  <article class="doc">{{ html|safe }}</article>
+</div></section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/mermaid.min.js"></script>
+<script>if (window.mermaid) { mermaid.initialize({startOnLoad: true, theme: 'base', themeVariables: {primaryColor: '#eaf2fb', primaryBorderColor: '#0f4382', primaryTextColor: '#1d2433', lineColor: '#2b5797', fontFamily: 'Roboto, Arial'}}); }</script>
+{% endblock %}

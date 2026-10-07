@@ -1,0 +1,10 @@
+flowchart TB
+  A[sudo bash<br/>korrektor-installer.sh] --> B[Определение системы<br/>apt / dnf / yum / zypper / pacman]
+  B --> C[Системные пакеты<br/>python3, hunspell-ru,<br/>tesseract*, nginx*]
+  C --> D[Пользователь korrektor,<br/>папки /opt, /var/lib, /etc]
+  D --> E[Python venv<br/>и зависимости]
+  E --> F[korrektor.env<br/>пароль и секрет]
+  F --> G[Служба systemd<br/>korrektor.service]
+  G --> H[nginx*, брандмауэр*,<br/>LanguageTool*]
+  H --> I[Проверка /api/health]
+  I --> J[Адрес и пароль<br/>на экране]

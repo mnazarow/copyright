@@ -1,0 +1,110 @@
+{% extends "base.html" %}{% block title %}Настройки{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Настройки</h1>
+  <p class="muted">Все параметры проверки в одном месте. У каждой настройки есть подробное описание, рекомендация и пример —
+  нажмите «Подробнее». Изменения применяются к новым заданиям; старые можно перепроверить кнопкой «Проверить заново».</p>
+  {% if saved %}<div class="notice ok">Настройки сохранены.</div>{% endif %}
+  {% if applied %}<div class="notice warn">В форму подставлены значения профиля «{{ applied }}». Они еще не сохранены —
+    проверьте и нажмите «Сохранить настройки».</div>{% endif %}
+
+  <div class="settings-layout">
+    <aside class="side">
+      <input class="search" type="text" id="s-search" placeholder="Поиск настройки…">
+      {% for g, title, desc, items in groups %}<a href="#{{ g }}" data-g="{{ g }}">{{ title }}</a>{% endfor %}
+      <a href="#prompt">Мастер-промпт</a>
+      <a href="#backup">Резервная копия настроек</a>
+    </aside>
+    <div>
+      <div class="card" style="margin-bottom:24px">
+        <h3>Быстрая настройка профилем</h3>
+        <p class="muted">Профиль подставит в форму согласованный набор значений. Ключ API и токен не меняются.</p>
+        <div class="filters">
+          <select id="profile-pick">{% for v,t in groups[0][3][0].options %}<option value="{{ v }}" {{ 'selected' if v==vals.profile }}>{{ t }}</option>{% endfor %}</select>
+          <button class="btn ghost" type="button" onclick="location.href='/settings?applied='+document.getElementById('profile-pick').value">Применить профиль</button>
+        </div>
+      </div>
+
+      <form method="post" action="/settings" id="sform">
+      {% for g, title, desc, items in groups %}
+      <div class="group" id="{{ g }}">
+        <h2>{{ title }}</h2><p>{{ desc }}</p>
+        {% if g == 'ai' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-ai', this)">Проверить связь с моделью</button>
+          <span class="muted"></span></p>{% endif %}
+        {% if g == 'spelling' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-lt', this)">Проверить связь с LanguageTool</button>
+          <span class="muted"></span></p>{% endif %}
+        {% for s in items %}{% set val = vals.get(s.key) %}
+        <div class="setting {{ 'wide' if s.type in ('text',) }}" data-search="{{ (s.title ~ ' ' ~ s.description ~ ' ' ~ s.key)|lower }}">
+          <div class="top">
+            <div>
+              <div class="title">{{ s.title }}</div>
+              <div class="key">{{ s.key }} · по умолчанию: {% if s.type=='bool' %}{{ 'включено' if s.default else 'выключено' }}{% elif s.type=='multi' %}{{ s.default|length }} знач.{% elif s.type=='secret' %}пусто{% elif s.type=='text' %}список{% else %}{{ s.default }}{% endif %}</div>
+              <div class="short">{{ s.description.split('. ')[0] }}.</div>
+              <button type="button" class="toggle">Подробнее ▾</button>
+            </div>
+            <div class="ctl">
+            {% if s.type == 'bool' %}
+              <label class="switch"><input type="checkbox" name="{{ s.key }}" {{ 'checked' if val }}><span></span></label>
+            {% elif s.type in ('int','float') %}
+              <input type="number" name="{{ s.key }}" value="{{ val }}" {% if s.min is defined %}min="{{ s.min }}"{% endif %}
+                {% if s.max is defined %}max="{{ s.max }}"{% endif %} step="{{ s.step if s.step is defined else (0.1 if s.type=='float' else 1) }}">
+            {% elif s.type == 'select' %}
+              <select name="{{ s.key }}">{% for v,t in s.options %}<option value="{{ v }}" {{ 'selected' if v==val }}>{{ t }}</option>{% endfor %}</select>
+            {% elif s.type == 'multi' %}
+              <div class="multi">{% for v,t in s.options %}<label><input type="checkbox" name="{{ s.key }}" value="{{ v }}" {{ 'checked' if v in (val or []) }}> {{ t }}</label>{% endfor %}</div>
+            {% elif s.type == 'secret' %}
+              <input type="password" name="{{ s.key }}" value="{{ '••••••••' if val else '' }}" placeholder="не задан" autocomplete="new-password">
+              {% if val %}<label class="muted" style="font-size:13px"><input type="checkbox" name="{{ s.key }}__clear"> удалить</label>{% endif %}
+              {% if s.key=='api_token' %}<button type="button" class="btn ghost small" style="margin-top:6px" onclick="genToken(this)">Сгенерировать</button>{% endif %}
+            {% elif s.type == 'text' %}
+            {% else %}
+              <input type="text" name="{{ s.key }}" value="{{ val }}">
+            {% endif %}
+            </div>
+          </div>
+          {% if s.type == 'text' %}<textarea name="{{ s.key }}" rows="{{ [4, (val or '').count('\n') + 2]|max }}">{{ val }}</textarea>{% endif %}
+          <div class="more">
+            <h4>Что делает</h4><p>{{ s.description }}</p>
+            <h4>Рекомендация</h4><p>{{ s.recommendation }}</p>
+            <h4>Пример</h4><p class="ex">{{ s.example }}</p>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      <div class="savebar"><button class="btn" type="submit">Сохранить настройки</button>
+        <span class="muted" id="dirty"></span></div>
+      </form>
+
+      <div class="group" id="prompt">
+        <h2>Мастер-промпт</h2>
+        <p>Методика вычитки, которую получает языковая модель, и источник всех правил оформления отчета.</p>
+        <div class="card">
+          <p>Действующий файл: <b>{{ prompt.name }}</b> — {{ prompt.title }} ({{ (prompt.size/1024)|int }} КБ)
+          {% if prompt.custom %}<span class="badge warn">загружен пользователем</span>{% else %}<span class="badge ok">встроенный</span>{% endif %}</p>
+          <div class="filters">
+            <a class="btn ghost small" href="/settings/prompt/download">Скачать</a>
+            <form method="post" action="/settings/prompt" enctype="multipart/form-data" class="filters" style="margin:0">
+              <input type="file" name="file" accept=".md,.txt" required style="width:auto"><button class="btn small">Загрузить свой</button></form>
+            {% if prompt.custom %}<form method="post" action="/settings/prompt" style="margin:0"><input type="hidden" name="reset" value="1">
+              <button class="btn danger small">Вернуть встроенный</button></form>{% endif %}
+          </div>
+          <p class="muted">Скрипты сборки и проверки отчета (build.py, verify.py) остаются встроенными: правила оформления DOCX и
+          25 проверок не меняются при загрузке другого промпта.</p>
+        </div>
+      </div>
+      <div class="group" id="backup">
+        <h2>Резервная копия настроек</h2>
+        <div class="card filters">
+          <a class="btn ghost small" href="/settings/export">Скачать настройки (без ключей)</a>
+          <form method="post" action="/settings/import" enctype="multipart/form-data" class="filters" style="margin:0">
+            <input type="file" name="file" accept=".json" required style="width:auto"><button class="btn small">Загрузить из файла</button></form>
+          <form method="post" action="/settings/reset" onsubmit="return confirm('Вернуть все настройки к значениям по умолчанию? Ключ API и токен сохранятся.')" style="margin:0">
+            <button class="btn danger small">Сбросить к значениям по умолчанию</button></form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></section>
+{% endblock %}
+{% block scripts %}<script>initSettings();</script>{% endblock %}

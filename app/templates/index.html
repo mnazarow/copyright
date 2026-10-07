@@ -1,0 +1,79 @@
+{% extends "base.html" %}{% block title %}Проверка документа{% endblock %}
+{% block body %}
+<section class="hero"><div class="wrap">
+  <h1>Корректорская вычитка PDF-документов</h1>
+  <p>Загрузите каталог, паспорт или брошюру — сервис проверит текст, верстку, коды и данные и соберет отчет
+  DOCX по мастер-промпту корректора: что не так, где именно и как правильно.</p>
+  <a class="btn" href="#upload">Загрузить документ</a>
+  <a class="btn ghost" href="/docs/index">Как это работает</a>
+  <div class="stats">
+    <div class="stat"><b>8</b><span>категорий ошибок</span></div>
+    <div class="stat"><b>5</b><span>проходов вычитки</span></div>
+    <div class="stat"><b>25</b><span>машинных проверок отчета</span></div>
+    <div class="stat"><b>11</b><span>типографских правил</span></div>
+    <div class="stat"><b>{{ 'ИИ' if ai_on else 'Офлайн' }}</b><span>{{ 'смысловая вычитка включена' if ai_on else 'правила и словарь без интернета' }}</span></div>
+  </div>
+</div></section>
+
+<section class="section" id="upload"><div class="wrap">
+  <div class="grid g2" style="grid-template-columns: 3fr 2fr">
+    <div class="card">
+      <h2>Новая проверка</h2>
+      <form id="upform" method="post" action="/upload" enctype="multipart/form-data">
+        <div class="drop" id="drop">
+          <div class="ico">⬆</div>
+          <h3>Перетащите сюда PDF или ZIP с несколькими PDF</h3>
+          <div class="muted">или нажмите, чтобы выбрать файлы · до {{ st.max_upload_mb }} МБ на файл</div>
+          <input type="file" name="files" id="fileinput" accept=".pdf,.zip" multiple hidden>
+          <ul class="files" id="filelist"></ul>
+        </div>
+        <div class="form-row">
+          <div><label class="f">Профиль</label>
+            <select name="profile"><option value="">Как в настройках ({{ st.profile }})</option>
+            {% for v,t in profiles %}<option value="{{ v }}">{{ t }}</option>{% endfor %}</select></div>
+          <div><label class="f">Режим</label>
+            <select name="mode"><option value="">Как в настройках</option>
+            {% for v,t in modes %}<option value="{{ v }}">{{ t }}</option>{% endfor %}</select></div>
+          <div><label class="f">Строка в шапку отчета (необязательно)</label>
+            <input type="text" name="note" placeholder="Например: Корректор: И. И. Иванов"></div>
+        </div>
+        <p style="margin-top:18px"><button class="btn" id="upbtn" type="submit" disabled>Проверить</button>
+        <span class="muted" id="uphint">Выберите файл</span></p>
+        <div class="progress" id="upprog" style="display:none"><i style="width:0"></i></div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Что получится</h3>
+      <ul>
+        <li><b>Отчет DOCX</b> — альбомная таблица из 6 колонок: страница и пункт, тип, как в документе
+          (ошибка красным), как правильно (исправление зеленым), пояснение.</li>
+        <li><b>PDF с пометками</b> — ваш документ с подсвеченными ошибками и комментариями.</li>
+        <li><b>XLSX и JSON</b> — для фильтрации и интеграции.</li>
+        <li><b>Технический контроль PDF</b> — шрифты, разрешение картинок, заглушки.</li>
+      </ul>
+      {% if not ai_on %}<div class="notice info">Языковая модель не подключена: сервис найдет типографику, смешение
+      алфавитов, слова вне словаря, ошибки в таблицах и содержании. Для смысловой вычитки подключите модель в
+      <a href="/settings#ai">настройках</a>.</div>{% endif %}
+    </div>
+  </div>
+</div></section>
+
+<section class="section white"><div class="wrap">
+  <h2>Как работает проверка</h2>
+  <div class="grid g5">
+    <div class="step"><div class="n">ШАГ 1</div><h3>Извлечение</h3><p>Текст, координаты строк, колонтитулы, таблицы, изображения страниц.</p></div>
+    <div class="step"><div class="n">ШАГ 2</div><h3>Правила</h3><p>Типографика, алфавиты, висячие предлоги, глоссарий, реквизиты.</p></div>
+    <div class="step"><div class="n">ШАГ 3</div><h3>Словарь и ИИ</h3><p>Hunspell, LanguageTool и пять проходов вычитки по мастер-промпту.</p></div>
+    <div class="step"><div class="n">ШАГ 4</div><h3>Отчет</h3><p>DOCX строго по требованиям оформления, PDF с пометками, XLSX.</p></div>
+    <div class="step"><div class="n">ШАГ 5</div><h3>Приемка</h3><p>25 машинных проверок. Непринятый отчет не отдается.</p></div>
+  </div>
+</div></section>
+
+{% if jobs %}
+<section class="section"><div class="wrap">
+  <h2>Последние проверки</h2>
+  {% include "_jobs_table.html" %}
+  <p><a href="/jobs">Все задания →</a></p>
+</div></section>
+{% endif %}
+{% endblock %}

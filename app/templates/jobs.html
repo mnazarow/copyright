@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}Задания{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Задания</h1>
+  <p class="muted">Все загруженные документы. Задания старше {{ st.retention_days or '∞' }} дней удаляются автоматически
+  (настройка «Хранить задания»).</p>
+  {% if jobs %}{% include "_jobs_table.html" %}{% else %}<div class="card">Заданий пока нет. <a href="/#upload">Загрузите документ</a>.</div>{% endif %}
+</div></section>
+{% endblock %}
+{% block scripts %}<script>pollJobsTable();</script>{% endblock %}
