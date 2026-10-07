@@ -4,7 +4,7 @@
   <h2>Вход</h2>
   <p class="muted">Введите пароль администратора. Он был показан в конце установки и хранится в файле
   <code>/etc/korrektor/korrektor.env</code>.</p>
-  {% if error %}<div class="notice warn">Неверный пароль.</div>{% endif %}
+  {% if error == "locked" %}<div class="notice warn">Слишком много неверных попыток. Повторите через 5 минут.</div>{% elif error %}<div class="notice warn">Неверный пароль.</div>{% endif %}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next }}">
     <label class="f">Пароль</label>

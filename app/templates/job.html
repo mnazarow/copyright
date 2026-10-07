@@ -9,6 +9,7 @@
     </div>
     <div class="dl">
       <a class="btn ghost small" href="/job/{{ job.id }}/file/source">Исходный PDF</a>
+      {% if job.status == 'done' %}<a class="btn ghost small" href="/analytics?job={{ job.id }}" title="Графики и показатели этого документа">Аналитика</a>{% endif %}
       <form method="post" action="/job/{{ job.id }}/restart" onsubmit="return confirm('Проверить документ заново с текущими настройками? Ручные отметки будут потеряны.')">
         <button class="btn ghost small">Проверить заново</button></form>
       <form method="post" action="/job/{{ job.id }}/delete" onsubmit="return confirm('Удалить задание и все его файлы?')">

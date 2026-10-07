@@ -6,9 +6,9 @@
 объединяет повторы в системные строки (п. 5.4) и следит, чтобы одно место не попало дважды.
 """
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 
-from .common import (AUTHOR, CYR2LAT, LAT2CYR, PageIndex, kind, norm, page_list, window, yo)
+from .common import (AUTHOR, CYR2LAT, LAT2CYR, kind, norm, page_list, window, yo)
 
 NB = " "
 STD = re.compile(r"(ГОСТ|СП|СНиП|ТУ|ФЗ|ISO|IEC|МЭК|EN|DIN|№|ТР)\s*[\w.]*$")

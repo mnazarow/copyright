@@ -25,7 +25,7 @@ copy_tree() {  # copy_tree ИСТОЧНИК НАЗНАЧЕНИЕ
     find "$dst/app/prompts" -mindepth 1 ! -name custom_prompt.md -exec rm -rf {} + 2>/dev/null || true
   fi
   tar -C "$src" --exclude=./venv --exclude=./data --exclude=./dist --exclude='__pycache__' \
-      --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" -xf -
+      --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" --no-same-owner -xf -
 }
 
 while [ $# -gt 0 ]; do case "$1" in
@@ -58,27 +58,41 @@ say "Обновление $OLD → $NEW"
 if [ $BACKUP -eq 1 ]; then
   mkdir -p /var/backups/$APP
   B=/var/backups/$APP/before-update-$(date +%Y%m%d-%H%M%S).tgz
-  tar czf "$B" -C / var/lib/$APP etc/$APP opt/$APP --exclude=opt/$APP/venv 2>>"$LOG" || true
-  ok "Резервная копия: $B"
+  tar czf "$B" --exclude=opt/$APP/venv --exclude='*/pages/*.png' -C / var/lib/$APP etc/$APP opt/$APP 2>>"$LOG" \
+    && ok "Резервная копия: $B" || die "Резервная копия не создана (место на диске?). Журнал: $LOG; без копии: --no-backup"
+  ls -1t /var/backups/$APP/before-update-*.tgz 2>/dev/null | tail -n +6 | xargs -r rm -f   # хранить 5 последних
 fi
+# зависимости ставятся до остановки службы: если PyPI недоступен, работающая версия не пострадает
+say "Обновление зависимостей Python"
+$PREFIX/venv/bin/pip install -q -r "$SRC/requirements.txt" >>"$LOG" 2>&1 || die "Ошибка pip — служба не остановлена, версия $OLD работает (журнал $LOG)"
+
 ROLL=$(mktemp -d); tar -C $PREFIX --exclude=./venv -cf - . | tar -C $ROLL -xf -
+rollback() {
+  trap - ERR
+  echo -e "${c_err}Ошибка обновления — откат на $OLD${c_0}"
+  svc stop $APP 2>/dev/null || true
+  copy_tree "$ROLL" $PREFIX
+  chown -R root:root $PREFIX/app $PREFIX/scripts 2>/dev/null || true
+  chown -R $APP:$APP $PREFIX/app/prompts 2>/dev/null || true
+  $PREFIX/venv/bin/pip install -q -r $PREFIX/requirements.txt >>"$LOG" 2>&1 || true
+  svc start $APP
+}
+trap 'rollback; die "Обновление отменено (журнал $LOG)"' ERR
 
 svc stop $APP 2>/dev/null || true
 say "Копирование файлов"
 copy_tree "$SRC" $PREFIX
-say "Обновление зависимостей Python"
-$PREFIX/venv/bin/pip install -q -r $PREFIX/requirements.txt >>"$LOG" 2>&1 || die "Ошибка pip (журнал $LOG)"
-chown $APP:$APP $PREFIX/app/prompts 2>/dev/null || true
+chown -R root:root $PREFIX/app $PREFIX/scripts $PREFIX/docs 2>/dev/null || true
+find $PREFIX -maxdepth 1 -type f -exec chown root:root {} + 2>/dev/null || true
+chown -R $APP:$APP $PREFIX/app/prompts 2>/dev/null || true
 svc daemon-reload 2>/dev/null || true
 svc start $APP
 PORT=$(grep '^KORREKTOR_PORT=' $ENVF | cut -d= -f2)
 [ $HAS_SD -eq 1 ] && for i in $(seq 1 30); do curl -fs http://127.0.0.1:$PORT/api/health >/dev/null 2>&1 && break; sleep 1; done
+trap - ERR
 if [ $HAS_SD -eq 1 ] && ! curl -fs http://127.0.0.1:$PORT/api/health >/dev/null 2>&1; then
-  echo -e "${c_err}Новая версия не запустилась — откат на $OLD${c_0}"
-  systemctl stop $APP || true
-  copy_tree $ROLL $PREFIX
-  $PREFIX/venv/bin/pip install -q -r $PREFIX/requirements.txt >>"$LOG" 2>&1 || true
-  systemctl start $APP; die "Обновление отменено. Журнал службы: journalctl -u $APP -n 80"
+  echo -e "${c_err}Новая версия не запустилась${c_0}"
+  rollback; die "Обновление отменено. Журнал службы: journalctl -u $APP -n 80"
 fi
 rm -rf "$ROLL" ${TMP:+"$TMP"}
 ok "Корректор обновлен до версии $NEW. Данные, настройки и пароль сохранены."

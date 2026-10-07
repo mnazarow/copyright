@@ -147,7 +147,11 @@ def parse_verify(out):
 
 def report_name(st, name, job_id):
     tpl = st.get("report_filename") or "{name}_корректура"
-    return re.sub(r'[\\/:*?"<>|]', "_", tpl.format(name=name, date=dt.date.today().isoformat(), job=job_id))
+    try:
+        base = tpl.format(name=name, date=dt.date.today().isoformat(), job=job_id)
+    except (KeyError, IndexError, ValueError, AttributeError):
+        base = f"{name}_корректура"                       # ошибка в шаблоне имени — имя по умолчанию
+    return re.sub(r'[\\/:*?"<>|]', "_", base).strip() or "отчет_корректура"
 
 
 def build_report(job_dir, state, st, log):
@@ -318,6 +322,9 @@ def process(job_dir, name, st, log, progress, job_id=0):
              "page_refs": dump.get("page_refs", []), "report_base": report_name(st, name, job_id)}
     progress(0.85, "Сборка отчета DOCX и машинная проверка (25 требований)")
     state["verify"] = build_report(job_dir, state, st, log)
-    json.dump(state, open(os.path.join(job_dir, "state.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    tmp = os.path.join(job_dir, "state.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, os.path.join(job_dir, "state.json"))
     progress(1.0, "Готово")
     return state

@@ -22,13 +22,18 @@ if [ $PURGE -eq 1 ] && [ $BACKUP -eq 1 ] && [ -d $DATA ]; then
   tar czf "$B" -C / var/lib/$APP etc/$APP 2>/dev/null && echo "Резервная копия: $B"
 fi
 systemctl disable --now $APP 2>/dev/null
-systemctl disable --now languagetool 2>/dev/null
-rm -f /etc/systemd/system/$APP.service /etc/systemd/system/languagetool.service
+LT_OURS=0; [ -f $CONF/.lt_installed ] && LT_OURS=1      # LanguageTool ставил установщик Корректора
+if [ $LT_OURS -eq 1 ]; then
+  systemctl disable --now languagetool 2>/dev/null
+  rm -f /etc/systemd/system/languagetool.service
+fi
+rm -f /etc/systemd/system/$APP.service
 systemctl daemon-reload 2>/dev/null
 rm -f /etc/nginx/conf.d/$APP.conf /etc/nginx/sites-available/$APP /etc/nginx/sites-enabled/$APP
 command -v nginx >/dev/null && nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null
 rm -f /usr/local/bin/korrektor /usr/local/bin/korrektor-passwd
-rm -rf $PREFIX /opt/languagetool
+rm -rf $PREFIX
+[ $LT_OURS -eq 1 ] && rm -rf /opt/languagetool
 if [ $PURGE -eq 1 ]; then
   rm -rf $DATA $CONF
   userdel $APP 2>/dev/null

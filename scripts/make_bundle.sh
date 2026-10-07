@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd); V=$(cat "$ROOT/VERSION")
 mkdir -p "$ROOT/dist"; T=$(mktemp -d)
 mkdir -p "$T/korrektor-$V"
-tar -C "$ROOT" --exclude=./dist --exclude=./data --exclude='__pycache__' --exclude=./venv --exclude='*.pyc' \
+tar -C "$ROOT" --exclude=./dist --exclude=./data --exclude='__pycache__' --exclude=./venv --exclude='*.pyc' --exclude=./.pytest_cache \
     --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$T/korrektor-$V" -xf -
 tar czf "$ROOT/dist/korrektor-$V.tar.gz" -C "$T" "korrektor-$V"
 OUT="$ROOT/dist/korrektor-$V-installer.sh"

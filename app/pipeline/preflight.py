@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """Технический контроль PDF (preflight), OCR страниц-сканов, PDF с пометками."""
-import os
-import re
 from collections import Counter
 
 import pymupdf
-
-from .common import norm
 
 
 def preflight(pdf_path, st, dump):
@@ -118,7 +114,6 @@ def annotate(pdf_path, findings, out_path):
                 break
         text = (f"№ {i}. {f['type']}\nКак правильно: {f['fix']}\n{f['note']}").replace(" ", " ")
         if rects:
-            r = rects[0]
             an = page.add_highlight_annot(rects[:4])
             an.set_colors(stroke=(1, 0.85, 0) if f["type"] != "Требует проверки автором" else (0.55, 0.8, 1))
             an.set_info(title=f"Корректор, № {i}", content=text)

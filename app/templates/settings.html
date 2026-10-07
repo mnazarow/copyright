@@ -34,7 +34,7 @@
         {% if g == 'spelling' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-lt', this)">Проверить связь с LanguageTool</button>
           <span class="muted"></span></p>{% endif %}
         {% for s in items %}{% set val = vals.get(s.key) %}
-        <div class="setting {{ 'wide' if s.type in ('text',) }}" data-search="{{ (s.title ~ ' ' ~ s.description ~ ' ' ~ s.key)|lower }}">
+        <div class="setting {{ 'wide' if s.type in ('text',) }}" id="set-{{ s.key }}" data-search="{{ (s.title ~ ' ' ~ s.description ~ ' ' ~ s.key)|lower }}">
           <div class="top">
             <div>
               <div class="title">{{ s.title }}</div>

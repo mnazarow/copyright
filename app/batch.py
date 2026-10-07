@@ -84,7 +84,7 @@ def maybe_finish(batch):
         return
     st = core.load_settings()
     res = analyze(jobs, st)
-    json.dump(res, open(os.path.join(core.BATCHES, batch + ".json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    core.write_json_atomic(os.path.join(core.BATCHES, batch + ".json"), res, indent=1)
     # расхождения реквизитов → в отчет документа, где адрес отличается
     from .pipeline import run
     by_job = {}
@@ -95,28 +95,31 @@ def maybe_finish(batch):
         seen_addr.add((r["job"], r["address"]))
         by_job.setdefault(r["job"], []).append(r)
     for jid, items in by_job.items():
-        state = core.load_state(jid)
-        if not state:
-            continue
-        have = {norm(f["src"]) for f in state["findings"]}
-        for r in items:
-            src = yo(r["address"])
-            if norm(src) in have:
+        with core.state_lock(jid):
+            state = core.load_state(jid)
+            if not state:
                 continue
-            state["findings"].append({
-                "id": max([f["id"] for f in state["findings"]] + [0]) + 1, "status": "new", "rule": "batch",
-                "page": r["page"], "clause": "контакты", "type": AUTHOR, "src": src, "bad": src, "fix": "—", "good": "—",
-                "note": f"Сверка с другими документами пакета: рядом с «{r['key']}» в документах {', '.join(r['docs'][:3])} "
-                        f"указан адрес «{yo(r['others'][0]) if r['others'] else ''}» (п. 5.15)."})
-            have.add(norm(src))
-        job = core.get_job(jid)
-        s2 = dict(st)
-        s2.update(json.loads(job.get("settings") or "{}"))
-        state["verify"] = run.build_report(core.job_dir(jid), state, s2, lambda m: None)
-        core.save_state(jid, state)
-        v = state["verify"]
-        core.update_job(jid, findings=v.get("count", 0), verify_ok=1 if v.get("ok") else 0,
-                        verify_score=f"{v.get('passed', 0)}/{v.get('total', 0)}")
+            have = {norm(f["src"]) for f in state["findings"]}
+            for r in items:
+                src = yo(r["address"])
+                if norm(src) in have:
+                    continue
+                state["findings"].append({
+                    "id": max([f["id"] for f in state["findings"]] + [0]) + 1, "status": "new", "rule": "batch",
+                    "page": r["page"], "clause": "контакты", "type": AUTHOR, "src": src, "bad": src, "fix": "—", "good": "—",
+                    "note": f"Сверка с другими документами пакета: рядом с «{r['key']}» в документах {', '.join(r['docs'][:3])} "
+                            f"указан адрес «{yo(r['others'][0]) if r['others'] else ''}» (п. 5.15)."})
+                have.add(norm(src))
+            job = core.get_job(jid)
+            if not job:
+                continue
+            s2 = dict(st)
+            s2.update(json.loads(job.get("settings") or "{}"))
+            state["verify"] = run.build_report(core.job_dir(jid), state, s2, lambda m: None)
+            core.save_state(jid, state)
+            v = state["verify"]
+            core.update_job(jid, findings=v.get("count", 0), verify_ok=1 if v.get("ok") else 0,
+                            verify_score=f"{v.get('passed', 0)}/{v.get('total', 0)}")
 
 
 def load(batch):

@@ -30,18 +30,18 @@
 
 ### Шаг 1. Скопируйте установщик на сервер
 
-Установщик — один файл `korrektor-1.0.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
+Установщик — один файл `korrektor-1.1.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
 
 **Windows (PowerShell):**
 
 ```powershell
-scp .\korrektor-1.0.0-installer.sh user@10.0.0.15:~/
+scp .\korrektor-1.1.0-installer.sh user@10.0.0.15:~/
 ```
 
 **macOS / Linux:**
 
 ```bash
-scp korrektor-1.0.0-installer.sh user@10.0.0.15:~/
+scp korrektor-1.1.0-installer.sh user@10.0.0.15:~/
 ```
 
 Здесь `user` — ваше имя на сервере, `10.0.0.15` — адрес сервера. В WinSCP просто перетащите файл в окно сервера.
@@ -55,7 +55,7 @@ ssh user@10.0.0.15
 ### Шаг 3. Запустите установку
 
 ```bash
-sudo bash korrektor-1.0.0-installer.sh
+sudo bash korrektor-1.1.0-installer.sh
 ```
 
 Программа сама определит систему, поставит нужные пакеты, создаст службу и запустит ее. Через 2–5 минут на экране появятся адрес и пароль:
@@ -71,17 +71,17 @@ sudo bash korrektor-1.0.0-installer.sh
 
 ### Установка из распакованной папки
 
-Если у вас архив `korrektor-1.0.0.tar.gz` или папка с исходниками:
+Если у вас архив `korrektor-1.1.0.tar.gz` или папка с исходниками:
 
 ```bash
-tar xzf korrektor-1.0.0.tar.gz
-cd korrektor-1.0.0
+tar xzf korrektor-1.1.0.tar.gz
+cd korrektor-1.1.0
 sudo bash scripts/install.sh
 ```
 
 ## 3. Ключи установки
 
-Ключи пишутся после имени файла, например: `sudo bash korrektor-1.0.0-installer.sh --port 9000 --with-nginx`.
+Ключи пишутся после имени файла, например: `sudo bash korrektor-1.1.0-installer.sh --port 9000 --with-nginx`.
 
 | Ключ | Что делает | Пример |
 |---|---|---|
@@ -99,7 +99,7 @@ sudo bash scripts/install.sh
 **Рекомендуемая установка для офисной сети:**
 
 ```bash
-sudo bash korrektor-1.0.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --open-firewall
+sudo bash korrektor-1.1.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --open-firewall
 ```
 
 ## 4. Что и куда устанавливается
@@ -180,25 +180,36 @@ mkdir wheels && pip download -d wheels -r requirements.txt
 
 ```bash
 export PIP_NO_INDEX=1 PIP_FIND_LINKS=$HOME/wheels
-sudo -E bash korrektor-1.0.0-installer.sh
+sudo -E bash korrektor-1.1.0-installer.sh
 ```
 
 ## 9. Обновление
 
-Обновление сохраняет задания, настройки, пароль и загруженный мастер-промпт. Перед обновлением автоматически делается резервная копия; если новая версия не запустится, программа сама вернет старую.
+Обновление сохраняет задания, настройки, пароль и загруженный мастер-промпт. Порядок действий:
+
+1. Резервная копия данных, настроек и программы в `/var/backups/korrektor/before-update-*.tgz` (хранятся 5 последних; изображения страниц и venv в копию не входят). Если копию создать не удалось (например, нет места), обновление останавливается до каких-либо изменений.
+2. Установка новых зависимостей Python — **пока работает старая версия**. Если PyPI недоступен, обновление останавливается, служба продолжает работать.
+3. Остановка службы, замена файлов программы, запуск.
+4. Проверка ответа `/api/health` в течение 30 секунд.
+
+При ошибке на шагах 3–4 программа сама возвращает предыдущую версию и запускает службу.
+
+При обновлении с версии 1.0.0 база заданий дополняется полем времени начала обработки; старые задания остаются и попадают в аналитику (без разбивки времени по этапам).
 
 ```bash
-sudo bash korrektor-1.0.1-installer.sh --update
+sudo bash korrektor-1.1.0-installer.sh --update
 ```
 
 Или из архива, папки, git:
 
 ```bash
-sudo korrektor update --source korrektor-1.0.1.tar.gz
+sudo korrektor update --source korrektor-1.1.0.tar.gz
 sudo korrektor update --source https://git.local/korrektor.git
 ```
 
 ![Обновление](images/term-update.png)
+
+Повторный запуск установщика (не `--update`) безопасен: адрес и порт меняются, только если явно указаны `--listen` и `--port`; пароль и ключ сеансов сохраняются. Запускать установщик из самой папки `/opt/korrektor` нельзя — он откажется и подскажет, что делать.
 
 ## 10. Удаление
 
@@ -207,7 +218,7 @@ sudo korrektor uninstall            # удалить программу, зад�
 sudo korrektor uninstall --purge    # удалить все (перед этим делается резервная копия)
 ```
 
-Системные пакеты (python3, hunspell, nginx) не удаляются — ими могут пользоваться другие программы.
+Системные пакеты (python3, hunspell, nginx) не удаляются — ими могут пользоваться другие программы. LanguageTool удаляется, только если его устанавливал Корректор (ключ `--with-languagetool`).
 
 ## 11. Резервное копирование и перенос
 
@@ -234,7 +245,7 @@ sudo korrektor restore /var/backups/korrektor/korrektor-20261007-120000.tgz
 | `korrektor logs 300` | последние 300 строк журнала |
 | `korrektor follow` | журнал в реальном времени (выход — Ctrl+C) |
 | `sudo korrektor restart` | перезапуск (также `start`, `stop`) |
-| `sudo korrektor passwd` | новый случайный пароль; `sudo korrektor passwd МойПароль` — заданный |
+| `sudo korrektor passwd` | новый случайный пароль; `sudo korrektor passwd МойПароль` — заданный (без пробелов и кавычек). Все открытые сеансы завершаются |
 | `sudo korrektor password` | показать текущий пароль |
 | `sudo korrektor backup` / `restore Ф` | резервная копия и восстановление |
 | `sudo korrektor update …` | обновление |
@@ -245,7 +256,7 @@ sudo korrektor restore /var/backups/korrektor/korrektor-20261007-120000.tgz
 
 ```bash
 korrektor status                          # active (running) и {"status":"ok"}
-curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.0.0"}
+curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.1.0"}
 ```
 
 Затем загрузите любой PDF через браузер: через минуту должен появиться отчет с результатом 25/25.

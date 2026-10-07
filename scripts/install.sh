@@ -37,6 +37,7 @@ SOURCE=""
 OPEN_FW=0
 YES=0
 LOG=/var/log/$APP-install.log
+PORT_SET=0; LISTEN_SET=0
 
 c_ok="\033[1;32m"; c_info="\033[1;34m"; c_warn="\033[1;33m"; c_err="\033[1;31m"; c_0="\033[0m"
 say()  { echo -e "${c_info}==>${c_0} $*"; echo "[$(date +%T)] $*" >>"$LOG"; }
@@ -47,8 +48,8 @@ trap 'die "Установка прервана на строке $LINENO. Под
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --port) PORT="$2"; shift 2;;
-    --listen) LISTEN="$2"; shift 2;;
+    --port) PORT="$2"; PORT_SET=1; shift 2;;
+    --listen) LISTEN="$2"; LISTEN_SET=1; shift 2;;
     --password) PASSWORD="$2"; shift 2;;
     --with-nginx) WITH_NGINX=1; shift;;
     --domain) DOMAIN="$2"; shift 2;;
@@ -64,6 +65,8 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "Запустите от администратора: sudo bash $0"
 mkdir -p "$(dirname "$LOG")"; : >"$LOG"
+case "$PORT" in ""|*[!0-9]*) die "--port: нужен номер порта";; esac
+[ -n "$LISTEN" ] || { [ $WITH_NGINX -eq 1 ] && LISTEN_SET=1; }
 [ -z "$LISTEN" ] && { [ $WITH_NGINX -eq 1 ] && LISTEN=127.0.0.1 || LISTEN=0.0.0.0; }
 
 echo -e "${c_info}"
@@ -99,7 +102,7 @@ copy_tree() {  # copy_tree ИСТОЧНИК НАЗНАЧЕНИЕ
     find "$dst/app/prompts" -mindepth 1 ! -name custom_prompt.md -exec rm -rf {} + 2>/dev/null || true
   fi
   tar -C "$src" --exclude=./venv --exclude=./data --exclude=./dist --exclude='__pycache__' \
-      --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" -xf -
+      --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" --no-same-owner -xf -
 }
 
 
@@ -164,6 +167,7 @@ else
 fi
 SRC_DIR=$(cd "$SRC_DIR" && pwd)
 [ -f "$SRC_DIR/app/main.py" ] || die "Не найдены файлы программы в $SRC_DIR (ожидается app/main.py)"
+[ "$SRC_DIR" = "$(readlink -f $PREFIX 2>/dev/null || echo $PREFIX)" ] && die "Источник совпадает с $PREFIX: запустите установщик из распакованного архива или дистрибутива"
 VERSION=$(cat "$SRC_DIR/VERSION" 2>/dev/null || echo dev)
 ok "Исходники: $SRC_DIR (версия $VERSION)"
 
@@ -178,7 +182,7 @@ say "Копирование программы в $PREFIX"
 copy_tree "$SRC_DIR" $PREFIX
 chown -R root:root $PREFIX
 chown -R $APP:$APP $DATA
-mkdir -p $PREFIX/app/prompts && chown $APP:$APP $PREFIX/app/prompts
+mkdir -p $PREFIX/app/prompts && chown -R $APP:$APP $PREFIX/app/prompts
 
 # ---------------------------------------------------------------- 4. Python-окружение
 say "Виртуальное окружение Python и зависимости (1–3 минуты)"
@@ -203,8 +207,12 @@ EOF
   ok "Создан $ENVF"
 else
   PASSWORD=$(grep '^KORREKTOR_ADMIN_PASSWORD=' "$ENVF" | cut -d= -f2-)
-  sed -i "s/^KORREKTOR_PORT=.*/KORREKTOR_PORT=$PORT/; s/^KORREKTOR_HOST=.*/KORREKTOR_HOST=$LISTEN/" "$ENVF"
-  ok "Конфигурация $ENVF сохранена (пароль не изменен)"
+  # повторный запуск: меняются только явно заданные --port / --listen, остальное — как было
+  if [ $PORT_SET -eq 1 ]; then sed -i "s/^KORREKTOR_PORT=.*/KORREKTOR_PORT=$PORT/" "$ENVF"
+  else PORT=$(grep '^KORREKTOR_PORT=' "$ENVF" | cut -d= -f2); PORT=${PORT:-8080}; fi
+  if [ $LISTEN_SET -eq 1 ]; then sed -i "s/^KORREKTOR_HOST=.*/KORREKTOR_HOST=$LISTEN/" "$ENVF"
+  else LISTEN=$(grep '^KORREKTOR_HOST=' "$ENVF" | cut -d= -f2); LISTEN=${LISTEN:-0.0.0.0}; fi
+  ok "Конфигурация $ENVF сохранена (пароль не изменен, адрес $LISTEN:$PORT)"
 fi
 
 # ---------------------------------------------------------------- 6. LanguageTool
@@ -220,7 +228,8 @@ if [ $WITH_LT -eq 1 ]; then
   if [ ! -d /opt/languagetool ]; then
     T=$(mktemp -d)
     curl -fsSL https://languagetool.org/download/LanguageTool-stable.zip -o $T/lt.zip \
-      && unzip -q $T/lt.zip -d $T && mv $T/LanguageTool-* /opt/languagetool || warn "LanguageTool не скачан"
+      && unzip -q $T/lt.zip -d $T && mv $T/LanguageTool-* /opt/languagetool && touch $CONF/.lt_installed \
+      || warn "LanguageTool не скачан"
     rm -rf $T
   fi
   if [ -d /opt/languagetool ]; then
@@ -279,7 +288,11 @@ case "${1:-help}" in
   logs)    journalctl -u $APP -n "${2:-200}" --no-pager;;
   follow)  journalctl -u $APP -f;;
   passwd)  need_root "$@"; P="${2:-$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-14)}"
-           sed -i "s|^KORREKTOR_ADMIN_PASSWORD=.*|KORREKTOR_ADMIN_PASSWORD=$P|" $ENVF && systemctl restart $APP
+           case "$P" in *[[:space:]]*|*\"*|*\'*) echo "Пароль не должен содержать пробелы и кавычки"; exit 1;; esac
+           PE=$(printf '%s' "$P" | sed 's/[\\&|]/\\&/g')
+           # новый ключ подписи — все открытые сеансы завершаются
+           sed -i "s|^KORREKTOR_ADMIN_PASSWORD=.*|KORREKTOR_ADMIN_PASSWORD=$PE|; s|^KORREKTOR_SECRET=.*|KORREKTOR_SECRET=$(openssl rand -hex 32)|" $ENVF \
+             && systemctl restart $APP
            echo "Новый пароль администратора: $P";;
   password) need_root "$@"; grep '^KORREKTOR_ADMIN_PASSWORD=' $ENVF | cut -d= -f2-;;
   backup)  need_root "$@"; mkdir -p /var/backups/korrektor; F=/var/backups/korrektor/korrektor-$(date +%Y%m%d-%H%M%S).tgz

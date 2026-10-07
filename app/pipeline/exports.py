@@ -5,10 +5,15 @@ import csv
 COLS = ["№", "Стр., пункт", "Тип", "Как в документе", "Как правильно", "Пояснение"]
 
 
+def safe(v):
+    """Защита от «формульной инъекции»: текст из PDF, начинающийся с = + - @, Excel не должен считать формулой."""
+    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
 def rows(findings):
     for i, f in enumerate(findings, 1):
-        yield [i, f"стр. {f['page']}, {f['clause']}", f["type"], f["src"].replace(" ", " "),
-               f["fix"].replace(" ", " "), f["note"]]
+        yield [safe(x) for x in [i, f"стр. {f['page']}, {f['clause']}", f["type"], f["src"].replace(" ", " "),
+               f["fix"].replace(" ", " "), f["note"]]]
 
 
 def to_csv(findings, path):
@@ -45,6 +50,6 @@ def to_xlsx(findings, meta, path):
     ws.freeze_panes = "A2"
     info = wb.create_sheet("Документ")
     for line in meta.get("header_lines", []) + [meta.get("totals", ""), "", "Итог:", meta.get("summary", "")]:
-        info.append([line])
+        info.append([safe(line)])
     info.column_dimensions["A"].width = 140
     wb.save(path)

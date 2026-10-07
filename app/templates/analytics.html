@@ -1,0 +1,89 @@
+{% extends "base.html" %}{% from "_charts.html" import card, kpi %}
+{% block title %}Аналитика{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <div class="job-head">
+    <div>
+      <h1>Аналитика отчетов</h1>
+      <p class="muted" style="max-width:820px;margin-top:-6px">Сводные показатели по всем проверенным документам: какие ошибки
+      встречаются чаще, где их больше, насколько точны правила, как работает машинная проверка. Нажмите на столбец
+      графика — фильтр применится ко всей странице, а внизу откроется список замечаний.</p>
+    </div>
+    <div class="dl">
+      <div class="menu"><button type="button" class="btn ghost small" data-menu>Выгрузить ▾</button>
+        <div class="menu-list">
+          <a data-export="/api/analytics/export?format=xlsx">Все показатели — Excel (XLSX)</a>
+          <a data-export="/api/analytics/export?format=csv">Все показатели — CSV</a>
+          <a data-export="/api/analytics/export?format=json">Все показатели — JSON</a>
+          <a data-export="/api/analytics/export?format=findings&as=xlsx">Список замечаний — Excel</a>
+          <a data-export="/api/analytics/export?format=findings&as=csv">Список замечаний — CSV</a>
+        </div></div>
+      <button type="button" class="btn ghost small" id="copylink" title="Скопировать ссылку с текущими фильтрами">Ссылка</button>
+      <button type="button" class="btn ghost small" onclick="window.print()">Печать</button>
+    </div>
+  </div>
+
+  {% include "_filters.html" %}
+
+  <div class="akpis">
+    {{ kpi('docs', 'документов', 'Число проверенных документов (задания в статусе «Готово»)') }}
+    {{ kpi('pages', 'страниц', 'Сумма страниц проверенных документов') }}
+    {{ kpi('findings', 'замечаний', 'Строк в отчетах. Системная строка считается одной') }}
+    {{ kpi('density', 'на 10 страниц', 'Плотность ошибок: замечаний на каждые 10 страниц. Главный показатель качества верстки') }}
+    {{ kpi('author_share', '«автору», %', 'Доля замечаний «Требует проверки автором» — мест, где нужен ответ автора') }}
+    {{ kpi('precision', 'точность, %', 'Принято / (принято + отклонено) корректором. Показывает, насколько замечания полезны') }}
+    {{ kpi('reviewed_share', 'просмотрено, %', 'Доля замечаний, отмеченных корректором ✓ или ✕') }}
+    {{ kpi('verify_rate', 'прошли 25/25, %', 'Доля отчетов, прошедших все 25 машинных проверок оформления') }}
+    {{ kpi('avg_duration', 'сек. на документ', 'Среднее время обработки от начала до готового отчета') }}
+    {{ kpi('ai_share', 'от ИИ, %', 'Доля замечаний, найденных языковой моделью') }}
+  </div>
+  <div class="kpi-foot muted" id="kpi-foot"></div>
+
+  <div class="agrid">
+    {{ card('types', 'Замечания по типам', '8 категорий мастер-промпта · нажмите на столбец для фильтра', help='Длина столбца — число строк отчета данного типа. Цвет закреплен за типом и не меняется при фильтрации.') }}
+    {{ card('sources', 'Кто нашел ошибку', 'источник замечания: правило, словарь, модель…', help='Показывает вклад каждого механизма проверки. Если ИИ не подключен, его столбца нет.') }}
+    {{ card('status', 'Решения корректора', 'принято ✓ · отклонено ✕ · не просмотрено ○', h=180, help='Отметки, поставленные на странице задания. Отклоненные замечания не попадают в отчет.') }}
+    {{ card('systemic', 'Единичные и системные', 'системная строка заменяет 5 и больше одинаковых мест', h=180) }}
+    {{ card('rules', 'Топ-15 правил', 'какие правила срабатывают чаще всего', cls='wide', h=420) }}
+    {{ card('density', 'Плотность ошибок по документам', 'замечаний на 10 страниц · нажмите — откроется задание', cls='wide', h=360) }}
+    {{ card('heat', 'Документ × тип ошибки', 'чем темнее ячейка, тем больше замечаний · нажмите на ячейку', cls='wide', kind='html') }}
+    {{ card('position', 'Где в документе ошибки', 'часть объема документа: начало → конец', help='Ошибки, сконцентрированные в начале, часто означают, что вычитывали только первые страницы.') }}
+    {{ card('perdoc', 'Замечаний на документ', 'сколько документов попало в каждый диапазон') }}
+    {{ card('pages', 'Объем документов', 'распределение по числу страниц') }}
+    {{ card('duration', 'Время обработки', 'каждая точка — документ: страниц × секунд', help='Точки выше общей массы — документы, которые обрабатывались дольше обычного (большие изображения, ИИ, очередь).') }}
+    {{ card('stages', 'Этапы обработки', 'среднее время этапа, секунд') }}
+    {{ card('preflight', 'Предпечатная проверка', 'сколько документов с проблемой') }}
+    {{ card('verify', 'Машинная проверка отчетов', 'какие из 25 требований не выполнялись', help='Если список пуст — все отчеты приняты. Иначе отклоните или исправьте замечание, о котором говорит проверка.') }}
+    {{ card('pagestop', 'Страницы с наибольшим числом замечаний', 'кандидаты на переверстку', kind='html') }}
+    {{ card('ruletab', 'Точность правил', 'решения корректора по каждому правилу · ссылка ведет к настройке', cls='wide', kind='html',
+            help='Точность ниже 50 % при 10+ решениях — правило чаще ошибается на ваших документах: настройте или отключите его.') }}
+    {{ card('recurring', 'Повторяющиеся ошибки', 'одна и та же ошибка в разных документах — кандидаты в глоссарий', cls='wide', kind='html') }}
+    {{ card('unknown', 'Слова вне словаря', 'частые «незнакомые» слова: отметьте и добавьте в белый список одним нажатием', cls='wide', kind='html') }}
+  </div>
+
+  <div class="card" id="explorer" style="margin-top:24px">
+    <div class="ch-head"><div><h3>Обозреватель замечаний</h3><div class="ch-sub" id="ex-sub">все замечания с учетом фильтров</div></div>
+      <div class="ch-tools"><button type="button" data-ex="csv">CSV</button><button type="button" data-ex="xlsx">Excel</button></div></div>
+    <div class="filters">
+      <input type="text" id="ex-text" placeholder="Поиск по ошибке и исправлению…">
+      <span class="muted" id="ex-count"></span>
+      <span style="flex:1"></span>
+      <span class="muted">Выбранные:</span>
+      <button type="button" class="btn small ok" data-bulk="accepted" disabled>✓ Принять</button>
+      <button type="button" class="btn small danger" data-bulk="rejected" disabled>✕ Отклонить</button>
+      <button type="button" class="btn small ghost" data-bulk="new" disabled>○ Сбросить</button>
+    </div>
+    <div style="overflow:auto"><table class="t" id="ex-table"><thead><tr>
+      <th><input type="checkbox" id="ex-all" title="Выбрать все на странице"></th><th>Документ</th><th>Стр.</th><th>Тип</th>
+      <th>Правило</th><th>Ошибка</th><th>Как правильно</th><th>Статус</th></tr></thead><tbody></tbody></table></div>
+    <div class="filters"><button type="button" class="btn small ghost" id="ex-prev">← Назад</button>
+      <span class="muted" id="ex-page"></span><button type="button" class="btn small ghost" id="ex-next">Дальше →</button>
+      <span class="muted">Массовая отметка пересобирает отчеты затронутых документов.</span></div>
+  </div>
+</div></section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/chart.umd.min.js?v={{ version }}"></script>
+<script src="/static/js/charts.js?v={{ version }}"></script>
+<script>initAnalytics();</script>
+{% endblock %}

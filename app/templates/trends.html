@@ -1,0 +1,67 @@
+{% extends "base.html" %}{% from "_charts.html" import card, kpi %}
+{% block title %}Тренды{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <div class="job-head">
+    <div>
+      <h1>Тренды</h1>
+      <p class="muted" style="max-width:820px;margin-top:-6px">Как меняется качество документов во времени: плотность ошибок,
+      состав замечаний, точность правил, скорость обработки. Текущий период сравнивается с предыдущим такой же длины,
+      линия тренда и прогноз считаются методом наименьших квадратов.</p>
+    </div>
+    <div class="dl">
+      <div class="menu"><button type="button" class="btn ghost small" data-menu>Выгрузить ▾</button>
+        <div class="menu-list">
+          <a data-export="/api/trends/export?format=xlsx">Тренды — Excel (XLSX)</a>
+          <a data-export="/api/trends/export?format=csv">Тренды — CSV</a>
+          <a data-export="/api/trends/export?format=json">Тренды — JSON</a>
+        </div></div>
+      <button type="button" class="btn ghost small" id="copylink">Ссылка</button>
+      <button type="button" class="btn ghost small" onclick="window.print()">Печать</button>
+    </div>
+  </div>
+
+  {% include "_filters.html" %}
+
+  <h3 class="subhead">Период к предыдущему <span class="muted" id="prev-period"></span></h3>
+  <div class="akpis cmp">
+    {{ kpi('docs', 'документов') }}
+    {{ kpi('pages', 'страниц') }}
+    {{ kpi('density', 'на 10 страниц', 'Меньше — лучше') }}
+    {{ kpi('per_doc', 'на документ', 'Меньше — лучше') }}
+    {{ kpi('author_share', '«автору», %', 'Меньше — лучше') }}
+    {{ kpi('precision', 'точность, %', 'Больше — лучше') }}
+    {{ kpi('reviewed_share', 'просмотрено, %', 'Больше — лучше') }}
+    {{ kpi('verify_rate', 'прошли 25/25, %', 'Больше — лучше') }}
+    {{ kpi('avg_duration', 'сек. на документ', 'Меньше — лучше') }}
+    {{ kpi('sec_per_page', 'сек. на страницу', 'Меньше — лучше') }}
+  </div>
+  <div class="notice info" id="t-insight" hidden></div>
+
+  <div class="agrid">
+    {{ card('t-density', 'Плотность ошибок', 'замечаний на 10 страниц · скользящее среднее · тренд · прогноз (пунктир)', cls='wide', h=340,
+            help='Синяя линия — фактическое значение по периодам. Оранжевая — скользящее среднее за 3 периода (сглаживает случайные всплески). Серая — линейный тренд; пунктир — прогноз на 3 периода вперед. Падение линии — качество документов растет.') }}
+    {{ card('t-docs', 'Проверено документов', 'по периодам') }}
+    {{ card('t-pages', 'Проверено страниц', 'по периодам') }}
+    {{ card('t-types', 'Состав замечаний по типам', 'по периодам · переключатель — абсолютные значения или доли', cls='wide', h=340) }}
+    {{ card('t-sources', 'Источники замечаний', 'по периодам', cls='wide', h=300) }}
+    {{ card('t-author', 'Доля «Требует проверки автором»', '% замечаний') }}
+    {{ card('t-precision', 'Точность замечаний', '% принятых из просмотренных') }}
+    {{ card('t-verify', 'Отчеты, прошедшие 25/25', '% документов') }}
+    {{ card('t-duration', 'Время обработки', 'среднее, секунд на документ') }}
+    {{ card('t-rules', 'Динамика правил', 'срабатывания по периодам · изменение плотности к предыдущему периоду', cls='wide', kind='html',
+            help='Мини-график — число срабатываний правила в каждом периоде. «Изменение» сравнивает срабатывания на 10 страниц в текущем и предыдущем периодах, поэтому не зависит от объема.') }}
+    {{ card('t-new', 'Новое в периоде', 'ошибки, правила и слова, которых не было раньше', cls='wide', kind='html') }}
+    {{ card('t-families', 'Версии документов', 'плотность ошибок от версии к версии одного документа', cls='wide', h=320,
+            help='Документы объединяются в семейство по названию без номеров версий и дат («Каталог_v2» и «Каталог_v3»). Линия, идущая вниз, — правки вносятся и документ становится чище.') }}
+    {{ card('t-famtab', 'Сравнение версий', 'первая и последняя версия', cls='wide', kind='html') }}
+    {{ card('t-calendar', 'Календарь активности', 'документов в день за год · чем темнее, тем больше', cls='wide', kind='html') }}
+    {{ card('t-weekhour', 'Нагрузка по дням недели и часам', 'когда загружают документы', cls='wide', kind='html') }}
+  </div>
+</div></section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/chart.umd.min.js?v={{ version }}"></script>
+<script src="/static/js/charts.js?v={{ version }}"></script>
+<script>initTrends();</script>
+{% endblock %}

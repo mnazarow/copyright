@@ -1,0 +1,23 @@
+{# Карточка графика: заголовок, пояснение, переключатель «График / Таблица», выгрузка PNG и CSV. #}
+{% macro card(id, title, sub='', cls='', h=300, kind='chart', help='') %}
+<div class="ch-card {{ cls }}" id="c-{{ id }}" data-id="{{ id }}" data-kind="{{ kind }}">
+  <div class="ch-head">
+    <div><h3>{{ title }}</h3>{% if sub %}<div class="ch-sub">{{ sub }}</div>{% endif %}</div>
+    <div class="ch-tools">
+      {% if kind == 'chart' %}<button type="button" data-view="chart" class="on" title="Показать график">График</button>
+      <button type="button" data-view="table" title="Показать данные таблицей">Таблица</button>
+      <button type="button" data-act="png" title="Скачать изображение PNG">PNG</button>{% endif %}
+      <button type="button" data-act="csv" title="Скачать данные CSV">CSV</button>
+      {% if help %}<button type="button" data-act="help" title="Как читать">?</button>{% endif %}
+    </div>
+  </div>
+  {% if help %}<div class="ch-help">{{ help }}</div>{% endif %}
+  {% if kind == 'chart' %}<div class="ch-body" style="height:{{ h }}px"><canvas aria-label="{{ title }}" role="img"></canvas></div>{% endif %}
+  <div class="ch-table" {% if kind == 'chart' %}hidden{% endif %}></div>
+  <div class="ch-empty" hidden>Нет данных для выбранных фильтров</div>
+</div>
+{% endmacro %}
+
+{% macro kpi(id, label, hint='') %}
+<div class="akpi" id="k-{{ id }}" title="{{ hint }}"><b>—</b><span>{{ label }}</span><i></i></div>
+{% endmacro %}

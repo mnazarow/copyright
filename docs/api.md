@@ -25,6 +25,29 @@ Authorization: Bearer <токен>
 | POST | `/api/jobs/{id}/findings/{fid}` | изменить замечание: `{"status": "accepted" \| "rejected" \| "new", "fix": "…", "good": "…", "note": "…", "type": "…"}` |
 | POST | `/api/jobs/{id}/rebuild` | пересобрать отчет; необязательно `{"summary": "…"}` |
 
+### Аналитика и тренды
+
+| Метод | Адрес | Назначение |
+|---|---|---|
+| GET | `/api/analytics` | все показатели и данные графиков раздела «Аналитика» |
+| GET | `/api/analytics/findings?limit=200&offset=0` | замечания из всех документов (обозреватель); дополнительно `text` — поиск, `bad` — точная ошибка |
+| GET | `/api/analytics/export?format=xlsx` | выгрузка: `xlsx`, `csv`, `json`; `format=findings&as=xlsx` — список замечаний |
+| POST | `/api/analytics/bulk` | массовая отметка: `{"status": "accepted", "items": [{"job": 17, "id": 3}], "rebuild": true}` |
+| POST | `/api/analytics/whitelist` | добавить слова в белый список: `{"words": ["гидромодуль"]}` |
+| POST | `/api/analytics/glossary` | добавить пару в глоссарий: `{"good": "рым-болт", "bad": "рым болт"}` |
+| GET | `/api/trends` | данные раздела «Тренды»; дополнительно `gran` = `day` \| `week` \| `month` |
+| GET | `/api/trends/export?format=xlsx` | выгрузка трендов: `xlsx`, `csv`, `json` |
+
+Фильтры аналитики и трендов передаются параметрами адреса: `period` (`7`, `30`, `90`, `180`, `365`, `all`, `custom`), `from` и `to` (ГГГГ-ММ-ДД, для `custom`), `q` (часть названия), `family`, `batch`, `job`, `type`, `source` (`typo`, `codes`, `house`, `data`, `spell`, `lt`, `ai`, `batch`, `cand`), `status` (`new`, `accepted`, `rejected`), `rule`.
+
+```bash
+# плотность ошибок по месяцам за год — в JSON
+curl -s -H "Authorization: Bearer $TOKEN" "$URL/api/trends?gran=month&period=365" | python3 -c \
+  'import json,sys; t=json.load(sys.stdin); print(list(zip(t["labels"], t["series"]["density"])))'
+```
+
+Токен API открывает только адреса `/api/…`; страницы настроек через токен недоступны.
+
 Состояния задания (`status`): `queued` — в очереди, `running` — выполняется (`progress` от 0 до 1, `step` — этап), `done` — готово, `failed` — ошибка (`error`).
 
 ## 3. Примеры

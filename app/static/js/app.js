@@ -157,6 +157,11 @@ function initSettings() {
   });
   window.addEventListener('beforeunload', e => { if ($('#dirty').textContent) { e.preventDefault(); e.returnValue = ''; } });
   form.addEventListener('submit', () => { $('#dirty').textContent = ''; });
+  const h = decodeURIComponent(location.hash || '');
+  if (h.startsWith('#set-')) {
+    const el = document.getElementById(h.slice(1));
+    if (el) { el.classList.add('open', 'focus'); setTimeout(() => el.scrollIntoView({block: 'center'}), 50); }
+  }
 }
 async function testConn(url, btn) {
   const out = btn.nextElementSibling; out.textContent = 'Проверка… (сначала сохраните настройки)';

@@ -24,9 +24,10 @@
   <nav class="nav">
     <a href="/" class="{{ 'active' if page=='index' }}">Проверка</a>
     <a href="/jobs" class="{{ 'active' if page=='jobs' }}">Задания</a>
+    <a href="/analytics" class="{{ 'active' if page=='analytics' }}">Аналитика</a>
+    <a href="/trends" class="{{ 'active' if page=='trends' }}">Тренды</a>
     <a href="/settings" class="{{ 'active' if page=='settings' }}">Настройки</a>
     <a href="/docs" class="{{ 'active' if page=='docs' }}">Документация</a>
-    <a href="/docs/methodology">Методология</a>
   </nav>
   <a class="btn" href="/#upload">Проверить документ</a>
   {% endif %}
@@ -36,8 +37,8 @@
   <div><div class="brand">ВОДОКОМФОРТ · КОРРЕКТОР</div>
   <p>Проверка PDF-документов по мастер-промпту корректора: 8 категорий ошибок, 5 проходов вычитки,
   отчет DOCX с машинной проверкой оформления по 25 требованиям.</p></div>
-  <div><b>Разделы</b><br><a href="/">Проверка</a><br><a href="/jobs">Задания</a><br><a href="/settings">Настройки</a></div>
-  <div><b>Справка</b><br><a href="/docs">Документация</a><br><a href="/docs/faq">Вопросы и неполадки</a><br><a href="/api/docs">REST API</a></div>
+  <div><b>Разделы</b><br><a href="/">Проверка</a><br><a href="/jobs">Задания</a><br><a href="/analytics">Аналитика</a><br><a href="/trends">Тренды</a><br><a href="/settings">Настройки</a></div>
+  <div><b>Справка</b><br><a href="/docs">Документация</a><br><a href="/docs/methodology">Методология</a><br><a href="/docs/faq">Вопросы и неполадки</a><br><a href="/api/docs">REST API</a></div>
 </div></footer>
 <script src="/static/js/app.js?v={{ version }}"></script>
 {% block scripts %}{% endblock %}

@@ -7,7 +7,7 @@ XLSX и JSON. Отчет собирается и проверяется кодо
 ## Установка одной командой
 
 ```bash
-sudo bash korrektor-1.0.0-installer.sh            # самораспаковывающийся установщик
+sudo bash korrektor-1.1.0-installer.sh            # самораспаковывающийся установщик
 # или из распакованной папки:
 sudo bash scripts/install.sh
 ```
@@ -28,12 +28,14 @@ sudo bash scripts/install.sh
 | [docs/index.md](docs/index.md) | обзор и быстрый старт |
 | [docs/methodology.md](docs/methodology.md) | методология вычитки |
 | [docs/usage.md](docs/usage.md) | работа с сервисом |
+| [docs/analytics.md](docs/analytics.md) | аналитика отчетов |
+| [docs/trends.md](docs/trends.md) | тренды |
 | [docs/settings.md](docs/settings.md) | справочник всех 82 настроек |
 | [docs/installation.md](docs/installation.md) | установка, обновление, удаление |
 | [docs/administration.md](docs/administration.md) | администрирование и безопасность |
 | [docs/api.md](docs/api.md) | REST API |
 | [docs/faq.md](docs/faq.md) | вопросы и неполадки |
-| docs/Корректор_документация.pdf | вся документация одним PDF |
+| docs/Корректор_документация.pdf, .docx | вся документация одним файлом PDF и Word |
 
 ## Состав
 
@@ -43,6 +45,7 @@ app/pipeline/   конвейер проверки: правила, словар�
 app/pipeline/scripts/   extract.py, build.py, verify.py — дословно из мастер-промпта v5.7
 app/prompts/    мастер-промпт
 app/templates/, app/static/   интерфейс в стиле vodokomfort.ru
+tests/          автоматические тесты (python3 -m pytest -q tests/)
 docs/           документация, схемы (diagrams/*.mmd), снимки экрана (images/)
 scripts/        install.sh, update.sh, uninstall.sh, make_bundle.sh, gen_settings_doc.py
 ```
@@ -55,5 +58,5 @@ KORREKTOR_DATA=./data KORREKTOR_ADMIN_PASSWORD=dev uvicorn app.main:app --reload
 bash scripts/make_bundle.sh      # dist/korrektor-<версия>.tar.gz и установщик
 ```
 
-Сторонние компоненты: шрифты Roboto и Roboto Condensed (Apache License 2.0), Mermaid (MIT), PyMuPDF (AGPL-3.0),
+Сторонние компоненты: шрифты Roboto и Roboto Condensed (Apache License 2.0), Mermaid (MIT), Chart.js (MIT), PyMuPDF (AGPL-3.0),
 python-docx, FastAPI, Hunspell, LanguageTool (LGPL, по желанию), Tesseract (Apache 2.0, по желанию).
