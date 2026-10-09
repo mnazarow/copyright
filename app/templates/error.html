@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}{{ title }}{% endblock %}
+{% block body %}
+<section class="section"><div class="wrap"><div class="card login" style="max-width:640px">
+  <h2>{{ title }}</h2>
+  <p>{{ msg }}</p>
+  {% if eid %}<p class="muted small">Номер ошибки: <b>{{ eid }}</b>. Сообщите его администратору: подробности записаны
+    в журнал службы (<code>journalctl -u korrektor | grep {{ eid }}</code>).</p>{% endif %}
+  {% if code == 404 %}<p class="muted small">Список всех заданий — на странице <a href="/jobs">«Задания»</a>.</p>{% endif %}
+  <p><a class="btn ghost" href="javascript:history.back()">Назад</a> <a class="btn ghost" href="/">На главную</a></p>
+</div></div></section>
+{% endblock %}

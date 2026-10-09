@@ -91,37 +91,50 @@ def hunspell(idx, st, log=print):
     return H
 
 
-def languagetool(idx, st, log=print):
+def languagetool(idx, st, log=print, should_stop=None):
     if not st.get("lt_enabled"):
         return []
+    import time
     import httpx
+    from .common import Cancelled
     url = (st.get("lt_url") or "").rstrip("/") + "/v2/check"
     disabled = ",".join((st.get("lt_disabled_rules") or "").split())
+    level = "picky" if st.get("lt_picky") else "default"
     H = []
-    for page, p in idx.pages.items():
-        for ln in p["lines"]:
-            text = ln["text"].strip()
-            if len(text) < 25 or not re.search(r"[а-яё]{3,}", text):
-                continue
-            try:
-                r = httpx.post(url, data={"text": text, "language": "ru-RU", "disabledRules": disabled,
-                                          "level": "picky" if st.get("lt_picky") else "default"}, timeout=30)
-                r.raise_for_status()
-            except Exception as e:  # noqa
-                log(f"LanguageTool недоступен ({e}); проверка остановлена")
-                return H
-            for m in r.json().get("matches", []):
-                bad = text[m["offset"]:m["offset"] + m["length"]]
-                rep = [x["value"] for x in m.get("replacements", [])][:3]
-                rid = m.get("rule", {}).get("id", "")
-                cat = m.get("rule", {}).get("category", {}).get("id", "")
-                if not bad.strip() or rid == "MORFOLOGIK_RULE_RU_RU":
-                    continue                      # орфографию делает Hunspell
-                type_ = {"PUNCTUATION": "Пунктуация", "GRAMMAR": "Грамматика", "STYLE": "Стилистика",
-                         "TYPOGRAPHY": "Типографика", "CASING": "Орфография"}.get(cat, "Грамматика")
-                note = f"{m.get('message', '')} (LanguageTool, правило {rid})."
-                if rep:
-                    H.append(hit("lt", page, text, bad, rep[0], type_, note, group=("lt", page, text, bad)))
-                else:
-                    H.append(hit("lt", page, text, bad, None, AUTHOR, note, group=("lt", page, text, bad)))
+    total, t0 = len(idx.pages), time.time()
+    last = t0
+    with httpx.Client(timeout=30) as client:             # одно соединение на весь документ
+        for n, (page, p) in enumerate(idx.pages.items(), 1):
+            if should_stop and should_stop():
+                raise Cancelled()
+            if time.time() - last >= 30:
+                last = time.time()
+                log(f"  … LanguageTool: проверено {n - 1} из {total} страниц, находок {len(H)}, {int(last - t0)} с")
+            for ln in p["lines"]:
+                text = ln["text"].strip()
+                if len(text) < 25 or not re.search(r"[а-яё]{3,}", text):
+                    continue
+                try:
+                    r = client.post(url, data={"text": text, "language": "ru-RU", "disabledRules": disabled,
+                                               "level": level})
+                    r.raise_for_status()
+                    matches = r.json().get("matches", [])
+                except Exception as e:  # noqa
+                    log(f"⚠ LanguageTool недоступен ({e.__class__.__name__}: {str(e)[:200]}); грамматическая проверка "
+                        f"остановлена на стр. {page} — остальные проверки продолжаются")
+                    return H
+                for m in matches:
+                    bad = text[m["offset"]:m["offset"] + m["length"]]
+                    rep = [x["value"] for x in m.get("replacements", [])][:3]
+                    rid = m.get("rule", {}).get("id", "")
+                    cat = m.get("rule", {}).get("category", {}).get("id", "")
+                    if not bad.strip() or rid == "MORFOLOGIK_RULE_RU_RU":
+                        continue                      # орфографию делает Hunspell
+                    type_ = {"PUNCTUATION": "Пунктуация", "GRAMMAR": "Грамматика", "STYLE": "Стилистика",
+                             "TYPOGRAPHY": "Типографика", "CASING": "Орфография"}.get(cat, "Грамматика")
+                    note = f"{m.get('message', '')} (LanguageTool, правило {rid})."
+                    if rep:
+                        H.append(hit("lt", page, text, bad, rep[0], type_, note, group=("lt", page, text, bad)))
+                    else:
+                        H.append(hit("lt", page, text, bad, None, AUTHOR, note, group=("lt", page, text, bad)))
     return H

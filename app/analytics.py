@@ -16,7 +16,7 @@ from . import core
 from .pipeline.common import AUTHOR, TYPES
 from .pipeline.exports import safe
 
-STATS_VERSION = 6
+STATS_VERSION = 7
 
 # правило → (название, источник, ключ настройки)
 RULES = {
@@ -44,6 +44,7 @@ RULES = {
     "table": ("Данные таблиц", "data", "check_tables"),
     "toc": ("Содержание и номера страниц", "data", "check_toc"),
     "ref": ("Ссылки «стр. N»", "data", "check_refs"),
+    "figures": ("Нумерация рисунков и таблиц", "data", "check_figures"),
     "phone": ("Формат телефонов", "data", "check_phone_format"),
     "requisites": ("Реквизиты компании", "data", "requisites"),
     "spell": ("Слово вне словаря", "spell", "hunspell_enabled"),
@@ -68,7 +69,8 @@ STATUS = {"accepted": "Принято", "rejected": "Отклонено", "new":
 PREFLIGHT = [("fonts", "Шрифты не встроены"), ("low_dpi", "Изображения ниже порога dpi"),
              ("scans", "Страницы без текстового слоя"), ("placeholders", "Серые заглушки"),
              ("empty", "Пустые страницы"), ("sizes", "Разные форматы страниц"),
-             ("curves", "Текст в кривых"), ("style", "Нарушения стандарта оформления"), ("products", "Расхождения со справочником продукции")]
+             ("curves", "Текст в кривых"), ("style", "Нарушения стандарта оформления"), ("products", "Расхождения со справочником продукции"),
+             ("images", "Одинаковые изображения у разных изделий")]
 
 
 _learn_cache = {}
@@ -149,6 +151,7 @@ def _stats_from_state(state):
         "curves": len(pf.get("curves") or []),
         "style": len((state.get("style") or {}).get("issues") or []) if (state.get("style") or {}).get("configured") else 0,
         "products": len((state.get("products") or {}).get("issues") or []),
+        "images": len((state.get("images") or {}).get("duplicates") or []),
     }
     return {
         "_v": STATS_VERSION, "pages": pages, "findings": findings,
@@ -231,9 +234,12 @@ def failed_jobs(date_from=None, date_to=None, owner=None):
 # ------------------------------------------------------------------ фильтры
 def _d(s):
     try:
-        return dt.date.fromisoformat(str(s)[:10]) if s else None
+        d = dt.date.fromisoformat(str(s)[:10]) if s else None
     except ValueError:
         return None
+    if d and not (dt.date(1990, 1, 1) <= d <= dt.date(2200, 1, 1)):
+        return None                                    # «0001-01-01», «9999-12-31» — не даты документов
+    return d
 
 
 def _in_range(created, date_from, date_to):
@@ -534,7 +540,8 @@ def recommendations(d, st):
              and term.match(r["good"]) and term.match(r["bad"]) and r["good"].lower() != r["bad"].lower()
              and len(r["good"].split()) == len(r["bad"].split())][:5]
     for r in pairs:
-        out.append({"level": "info", "title": f"«{r['bad']}» → «{r['good']}» встречается в {r['docs']} документах",
+        out.append({"level": "info", "title": f"«{r['bad']}» → «{r['good']}» встречается в {r['docs']} "
+                                              f"{'документе' if r['docs'] % 10 == 1 and r['docs'] % 100 != 11 else 'документах'}",
                     "text": "Добавьте пару в глоссарий: ошибка будет находиться всегда, даже без языковой модели.",
                     "action": {"type": "glossary", "good": r["good"], "bad": r["bad"], "label": "В глоссарий"}})
     # 4. цели
@@ -963,24 +970,28 @@ def trend_rows(t):
 
 
 def to_xlsx(sheets, title):
+    """Книга Excel в режиме потоковой записи (write_only): 100 тысяч строк не держатся в памяти целиком."""
     from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    wb = Workbook()
-    wb.remove(wb.active)
+    wb = Workbook(write_only=True)
+    font, fill, al = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="0F4382"), Alignment(vertical="center", wrap_text=True)
     for name, head, rows in sheets:
+        rows = rows if isinstance(rows, list) else list(rows)
         ws = wb.create_sheet(re.sub(r"[\[\]:*?/\\]", "", name)[:31])
-        ws.append(head)
-        for c in ws[1]:
-            c.font = Font(bold=True, color="FFFFFF")
-            c.fill = PatternFill("solid", fgColor="0F4382")
-            c.alignment = Alignment(vertical="center", wrap_text=True)
-        for r in rows:
-            ws.append([("" if v is None else safe(v)) for v in r])
-        for i, h in enumerate(head, 1):
+        for i, h in enumerate(head, 1):              # ширина колонок — до записи строк
             width = max([len(str(h))] + [len(str(r[i - 1])) for r in rows[:300] if i - 1 < len(r) and r[i - 1] is not None])
             ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, width + 2))
         ws.freeze_panes = "A2"
+        cells = []
+        for h in head:
+            c = WriteOnlyCell(ws, value=h)
+            c.font, c.fill, c.alignment = font, fill, al
+            cells.append(c)
+        ws.append(cells)
+        for r in rows:
+            ws.append([("" if v is None else safe(v)) for v in r])
     wb.properties.title = title
     import io
     buf = io.BytesIO()

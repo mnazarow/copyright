@@ -7,7 +7,7 @@
   <div class="grid g2" style="align-items:start">
     <div class="card"><h3>{{ user.name or user.login }}</h3>
       <p>Логин: <b>{{ user.login }}</b><br>Роль: <b>{{ ROLES.get(user.role, user.role) }}</b><br>
-      Вход: {{ {'local': 'логин и пароль Корректора', 'ldap': 'доменная учетная запись (LDAP)', 'oidc': 'единый вход (OpenID Connect)', 'env': 'встроенный администратор', 'token': 'токен API'}.get(user.source, user.source) }}<br>
+      Вход: {{ {'local': 'логин и пароль Корректора', 'ldap': 'доменная учетная запись (LDAP)', 'oidc': 'единый вход (OpenID Connect)', 'cert': 'сертификат (смарт-карта)', 'env': 'встроенный администратор', 'token': 'токен API'}.get(user.source, user.source) }}<br>
       Загружено документов: <a href="/analytics?q=">{{ mine }}</a></p>
       {% if user.source in ('local', 'ldap', 'oidc') %}
       <form method="post" action="/account/profile">

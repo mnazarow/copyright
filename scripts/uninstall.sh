@@ -37,7 +37,8 @@ rm -rf $PREFIX
 if [ $PURGE -eq 1 ]; then
   rm -rf $DATA $CONF
   userdel $APP 2>/dev/null
-  echo "Корректор удален полностью."
+  echo "Корректор удален вместе с данными и настройками."
+  [ -d /var/backups/$APP ] && echo "Резервные копии оставлены в /var/backups/$APP (удалить: sudo rm -rf /var/backups/$APP)."
 else
   echo "Корректор удален. Данные сохранены: $DATA, $CONF (удалить: sudo rm -rf $DATA $CONF)."
 fi

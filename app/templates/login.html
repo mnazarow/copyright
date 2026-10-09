@@ -7,12 +7,14 @@
   Администратор входит логином <code>admin</code> и паролем из файла <code>/etc/korrektor/korrektor.env</code>.</p>
   {% if error == "locked" %}<div class="notice warn">Слишком много неверных попыток. Повторите через 5 минут.</div>
   {% elif error == "expired" %}<div class="notice warn">Время на ввод кода истекло. Войдите еще раз.</div>
+  {% elif error == "cert" %}<div class="notice warn">Вход по сертификату не выполнен: сертификат не предъявлен, не прошел проверку или не привязан к учетной записи. Подробности — у администратора в журнале действий.</div>
   {% elif error == "disabled" %}<div class="notice warn">Учетная запись отключена. Обратитесь к администратору.</div>
   {% elif error == "oidc" %}<div class="notice warn">Вход через корпоративную учетную запись не выполнен. Попробуйте еще раз; если ошибка повторяется — сообщите администратору (подробности в журнале действий).</div>
   {% elif error == "ldap" %}<div class="notice warn">Сервер каталога (LDAP) недоступен. Попробуйте позже или войдите локальной учетной записью.</div>
   {% elif error %}<div class="notice warn">Неверный логин или пароль.</div>{% endif %}
-  {% if oidc %}<p><a class="btn" href="/login/oidc?next={{ next|urlencode }}" style="width:100%;justify-content:center">{{ oidc }}</a></p>
-  <p class="muted" style="text-align:center;margin:6px 0 14px">или логин и пароль Корректора</p>{% endif %}
+  {% if oidc %}<p><a class="btn" href="/login/oidc?next={{ next|urlencode }}" style="width:100%;justify-content:center">{{ oidc }}</a></p>{% endif %}
+  {% if cert %}<p><a class="btn ghost" href="/login/cert?next={{ next|urlencode }}" style="width:100%;justify-content:center">Войти по сертификату (смарт-карте)</a></p>{% endif %}
+  {% if oidc or cert %}<p class="muted" style="text-align:center;margin:6px 0 14px">или логин и пароль Корректора</p>{% endif %}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next }}">
     <label class="f">Логин</label>

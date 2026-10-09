@@ -1,0 +1,50 @@
+{% extends "base.html" %}{% block title %}Сверка языковых версий{% endblock %}
+{% macro opt(j, sel) %}<option value="{{ j.id }}" {{ 'selected' if j.id == sel }}>№ {{ j.id }} · {{ j.name }} · {{ j.created[:10] }}</option>{% endmacro %}
+{% block body %}
+<section class="section"><div class="wrap">
+  <h1>Сверка языковых версий</h1>
+  <p class="muted" style="margin-top:-6px;max-width:860px">Русская и английская (или любая другая) версии одного документа сравниваются по тому,
+  что не зависит от языка: значения с единицами («5,5 кВт» = «5.5 kW»), числа и обозначения изделий. При одинаковом
+  числе страниц — постранично. Найденное — кандидаты: проверьте каждое место по страницам обеих версий.
+  <a href="/compare{% if a and b %}?a={{ a }}&b={{ b }}{% endif %}">Сравнение версий одного языка →</a></p>
+  <form class="afilters" method="get" style="position:static">
+    <label class="muted">Версия 1</label>
+    <select name="a" style="max-width:420px"><option value="">— выберите —</option>
+      {% if pivot %}<optgroup label="Текущее">{{ opt(pivot, a) }}</optgroup>{% endif %}
+      {% if same %}<optgroup label="Похожие названия">{% for j in same %}{{ opt(j, a) }}{% endfor %}</optgroup>{% endif %}
+      <optgroup label="Другие документы">{% for j in other %}{{ opt(j, a) }}{% endfor %}</optgroup></select>
+    <label class="muted">Версия 2</label>
+    <select name="b" style="max-width:420px"><option value="">— выберите —</option>
+      {% if pivot %}<optgroup label="Текущее">{{ opt(pivot, b) }}</optgroup>{% endif %}
+      {% if same %}<optgroup label="Похожие названия">{% for j in same %}{{ opt(j, b) }}{% endfor %}</optgroup>{% endif %}
+      <optgroup label="Другие документы">{% for j in other %}{{ opt(j, b) }}{% endfor %}</optgroup></select>
+    <button class="btn small">Сверить</button>
+    {% if res %}<a class="btn small ghost" href="/compare/lang/export?a={{ a }}&b={{ b }}">CSV</a>{% endif %}
+  </form>
+  {% if not res %}
+    <div class="notice info">{% if a and b and a == b %}Выберите два разных задания.{% else %}Выберите обе языковые версии (задания в статусе «Готово»).{% endif %}</div>
+  {% else %}
+  {% if res.same_lang %}<div class="notice warn">Обе версии на одном языке ({{ res.a.lang }}). Для сравнения версий одного документа используйте «Сравнение версий».</div>{% endif %}
+  {% if not res.by_page %}<div class="notice warn">Число страниц различается ({{ res.a.pages }} и {{ res.b.pages }}) — сверка выполнена по документу целиком.</div>{% endif %}
+  <div class="akpis">
+    <div class="akpi"><b>{{ res.totals.get('units', 0) }}</b><span>расхождений значений с единицами</span></div>
+    <div class="akpi"><b>{{ res.totals.get('models', 0) }}</b><span>расхождений обозначений</span></div>
+    <div class="akpi"><b>{{ res.totals.get('numbers', 0) }}</b><span>расхождений чисел</span></div>
+    <div class="akpi"><b>{{ res.rows|map(attribute='page')|unique|list|length if res.by_page else '—' }}</b><span>страниц с расхождениями</span></div>
+  </div>
+  <div class="grid g2" style="margin:12px 0 20px">
+    <div class="card"><b>Версия 1 ({{ res.a.lang|upper }}):</b> <a href="/job/{{ res.a.id }}">№ {{ res.a.id }} · {{ res.a.name }}</a> <span class="muted">{{ res.a.pages }} стр.</span></div>
+    <div class="card"><b>Версия 2 ({{ res.b.lang|upper }}):</b> <a href="/job/{{ res.b.id }}">№ {{ res.b.id }} · {{ res.b.name }}</a> <span class="muted">{{ res.b.pages }} стр.</span></div>
+  </div>
+  {% if res.ok %}<div class="notice ok">Расхождений в значениях, числах и обозначениях не найдено.</div>{% else %}
+  <div class="card" style="overflow:auto;padding:0"><table class="t compact">
+    <tr><th>Стр.</th><th>Что</th><th>Только в версии 1</th><th>Только в версии 2</th></tr>
+    {% for r in res.rows %}<tr><td>{% if r.page %}<a href="/job/{{ res.a.id }}/page/{{ r.page }}.png" target="_blank">{{ r.page }}</a> /
+      <a href="/job/{{ res.b.id }}/page/{{ r.page }}.png" target="_blank">{{ r.page }}</a>{% else %}весь документ{% endif %}</td>
+      <td class="small">{{ r.label }}</td>
+      <td>{% for x in r.only_a %}<span class="chip">{{ x }}</span>{% endfor %}</td>
+      <td>{% for x in r.only_b %}<span class="chip">{{ x }}</span>{% endfor %}</td></tr>{% endfor %}
+  </table></div>{% endif %}
+  {% endif %}
+</div></section>
+{% endblock %}

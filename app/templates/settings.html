@@ -32,8 +32,10 @@
       {% for g, title, desc, items in groups %}
       <div class="group" id="{{ g }}">
         <h2>{{ title }}</h2><p>{{ desc }}</p>
-        {% if g == 'ai' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-ai', this)">Проверить связь с моделью</button>
-          <span class="muted"></span></p>{% endif %}
+        {% if g == 'ai' %}<p><button type="button" class="btn ghost small" onclick="testConn('/settings/test-ai', this, $('#ai-test-out'))">Проверить связь с моделью</button>
+          <button type="button" class="btn ghost small" onclick="testConn('/settings/test-ai?full=1', this, $('#ai-test-out'))"
+            title="Запрос с настоящим мастер-промптом: сколько модель читает промпт, помещается ли он в контекст, отвечает ли JSON. У облачных API расходует около 30 тысяч токенов">Полная проверка с мастер-промптом</button></p>
+          <p class="muted pre-line small" id="ai-test-out"></p>{% endif %}
         {% if g == 'system' %}<div class="setting"><div class="title">Резервные копии</div>
           <div class="short">{% if bstat.last %}Последняя: {{ bstat.last.replace('T', ' ') }} ({{ bstat.reason }}), {{ (bstat.size // 1024) }} КБ — {{ bstat.file }}{% else %}Копий еще не было.{% endif %}
           {% if bstat.error %}<br><span class="bad-t">Ошибка: {{ bstat.error }}</span>{% endif %}</div>
@@ -48,7 +50,7 @@
               <span class="muted small bk-out"></span></li>{% endfor %}</ul></details>{% endif %}
           <details><summary>Загрузить копию с компьютера (перенос на новый сервер)</summary>
             <p class="small muted">Архив .tgz, созданный Корректором (автоматически, кнопкой или командой <code>korrektor backup</code>). После загрузки он будет проверен и появится в списке.</p>
-            <p><input type="file" form="bk-upload" name="file" accept=".tgz,.gz,application/gzip">
+            <p><input type="file" form="bk-upload" name="file" accept=".tgz,.gz,.enc,application/gzip">
               <button class="btn ghost small" form="bk-upload">Загрузить</button></p></details>
         </div>{% endif %}
         {% if g == 'standard' %}<div class="setting"><div class="title">Справочник продукции</div>
@@ -105,7 +107,8 @@
             {% endif %}
             </div>
           </div>
-          {% if s.type == 'text' %}<textarea name="{{ s.key }}" rows="{{ [4, (val or '').count('\n') + 2]|max }}">{{ val }}</textarea>{% endif %}
+          {% if s.type == 'text' %}<textarea name="{{ s.key }}" rows="{{ [4, (val or '').count('\n') + 2]|max }}">{{ val }}</textarea>
+            <input type="hidden" name="h__{{ s.key }}" value="{{ texthash(val) }}">{% endif %}
           <div class="more">
             <h4>Что делает</h4><p>{{ s.description }}</p>
             <h4>Рекомендация</h4><p>{{ s.recommendation }}</p>

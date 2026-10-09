@@ -17,6 +17,24 @@
     {% for d in data.depts %}<tr><td><a href="/control?department={{ (d.label if d.label != 'не указан' else '')|urlencode }}">{{ d.label }}</a></td>
       <td>{{ d.docs }}</td><td>{{ d.findings }}</td><td>{{ d.overdue }}</td><td>{{ d.oldest|round(0)|int }}</td></tr>{% endfor %}</table></div>{% endif %}
   {% if department %}<p>Отдел: <b>{{ department }}</b> · <a href="/control">все отделы</a></p>{% endif %}
+  {% if wf %}
+  <div class="card" style="margin-bottom:20px;overflow:auto" id="wf">
+    <h3>Согласование</h3>
+    <div class="wf-counts">
+      <span class="badge grey">ждут разбора: {{ wf.counts[''] }}</span>
+      <span class="badge">на разборе: {{ wf.counts['review'] }}</span>
+      <span class="badge warn">возвращены автору: {{ wf.counts['returned'] }}</span>
+      {% if st.workflow_sign_required %}<span class="badge ok">ждут утверждения: {{ wf.counts['approved'] }}</span>{% endif %}
+      <span class="badge ok">утверждены: {{ wf.counts['signed'] }}</span>
+      {% if wf.late %}<span class="badge bad">просрочено: {{ wf.late }}</span>{% endif %}
+    </div>
+    {% if wf.rows %}<table class="t compact" style="margin-top:12px"><tr><th>Документ</th><th>Этап</th><th>С</th><th>Срок</th><th>Автор · отдел</th></tr>
+      {% for r in wf.rows[:100] %}<tr><td><a href="/job/{{ r.id }}#workflow">{{ r.name }}</a></td><td>{{ r.label }}{% if r.by %}<br><span class="muted small">{{ r.by }}</span>{% endif %}</td>
+        <td class="small">{{ r.since or '—' }}</td><td class="{{ 'bad-t' if r.overdue }}">{{ r.due or '—' }}</td>
+        <td class="small">{{ r.author or '—' }}{% if r.department %}<br><span class="muted">{{ r.department }}</span>{% endif %}</td></tr>{% endfor %}</table>
+    {% else %}<p class="muted">Документов на этапах согласования нет.</p>{% endif %}
+  </div>
+  {% endif %}
   <div class="card" style="overflow:auto;padding:0">
   {% if data.rows %}
   <table class="t compact" id="ctl-table"><tr><th>Документ</th><th>Автор · отдел</th><th>Без отметки</th><th>Разобрано</th><th>Готов, дн.</th><th>Корректоры отдела</th><th></th></tr>

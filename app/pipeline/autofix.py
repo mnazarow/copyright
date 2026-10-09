@@ -8,7 +8,7 @@
 import re
 from collections import defaultdict
 
-from .common import (AUTHOR, CYR2LAT, LAT2CYR, kind, norm, page_list, window, yo)
+from .common import (AUTHOR, CYR2LAT, LAT2CYR, kind, norm, page_list, plural, window, yo)
 
 NB = " "
 STD = re.compile(r"(ГОСТ|СП|СНиП|ТУ|ФЗ|ISO|IEC|МЭК|EN|DIN|№|ТР)\s*[\w.]*$")
@@ -76,6 +76,10 @@ def typography(idx, st):
         if st.get("quote_style", "ru") == "ru":
             H += rule_regex(idx, "quotes", r'"([^"\n]{1,40})"', r"«\1»", "Типографика",
                             "Прямые кавычки вместо «елочек»; внутренние кавычки — „лапки“.")
+        else:                                          # английские кавычки (для англоязычных документов)
+            H += rule_regex(idx, "quotes", r'"([^"\n]{1,40})"|«([^«»\n]{1,40})»',
+                            lambda m: "\u201c" + (m.group(1) or m.group(2)) + "\u201d", "Типографика",
+                            "В документе приняты английские кавычки “…” (настройка «Кавычки»).")
     if st.get("typo_inch"):
         H += rule_regex(idx, "inch", r"(\d|½|¼|¾)\s*(?:''|’’)", r"\1″", "Типографика",
                         "Знак дюйма — двойной штрих ″ (U+2033), а не два апострофа.")
@@ -104,10 +108,22 @@ def typography(idx, st):
                         r"\1\2", "Единообразие",
                         "Четырехзначные числа пишутся слитно, пробелом разбиваются числа от пяти знаков "
                         "(1200, но 12 000).")
+    units = r"(?=\s?(?:мм|см|м|м³|м3|км|кг|т|л|шт|руб|₽|Вт|кВт|Па|кПа|МПа|бар|ч|об/мин|°С|°C)(?![\wА-яЁё]))"
+    if th == "space4":                                 # «всегда пробел»: 1 200 мм (только числа с единицами — не годы и артикулы)
+        H += rule_regex(idx, "thousands", r"(?<![\d,.\w-])(\d)(\d{3})(?![\d,.])" + units, r"\1" + NB + r"\2", "Единообразие",
+                        "В документе принято разбивать на разряды и четырехзначные числа (1 200), неразрывным пробелом.")
+    if th in ("space4", "space5"):                     # 12000 → 12 000 (числа с единицами)
+        H += rule_regex(idx, "thousands", r"(?<![\d,.\w-])(\d{1,3})((?:\d{3}){1,3})(?![\d,.])" + units,
+                        lambda m: m.group(1) + "".join(NB + m.group(2)[i:i + 3] for i in range(0, len(m.group(2)), 3)),
+                        "Единообразие", "Числа от пяти знаков разбиваются на разряды неразрывным пробелом (12 000).",
+                        cond=lambda m, t: len(m.group(1) + m.group(2)) >= 5)
     # десятичный разделитель
     if st.get("decimal_separator", "comma") == "comma":
         H += rule_regex(idx, "decimal", r"(?<![\d.])(\d+)\.(\d{1,3})(?=\s?(?:(?:мм|см|м|кг|кВт|Вт|бар|МПа|л)(?![\wА-яЁё])|%|°))",
                         r"\1,\2", "Типографика", "В русском тексте десятичный разделитель — запятая.")
+    else:                                              # точка (англоязычные документы)
+        H += rule_regex(idx, "decimal", r"(?<![\d,])(\d+),(\d{1,3})(?=\s?(?:(?:mm|cm|m|kg|kW|W|bar|MPa|l|мм|см|м|кг|кВт|Вт|бар|МПа|л)(?![\wА-яЁё])|%|°))",
+                        r"\1.\2", "Типографика", "В документе принята точка как десятичный разделитель (настройка).")
     # стандарты
     if st.get("check_standards"):
         H += rule_regex(idx, "std", r"\b(СП|ГОСТ|СНиП)(-|)(\d)", r"\1 \3", "Типографика",
@@ -385,6 +401,86 @@ def data_checks(idx, dump, st):
     return H
 
 
+# ------------------------------------------------------------------ рисунки и таблицы
+CAPTION = re.compile(r"^\s*(Рис(?:\.|унок)|Табл(?:\.|ица))\s*(\d{1,3}(?:\.\d{1,3})?)(?=$|[\s.:—–-])")
+FIGREF = re.compile(r"(?<![\w])(рис(?:\.|ун(?:ок|ке|ка|ку|ком))|табл(?:\.|иц(?:а|е|у|ы|ей)))\s*(\d{1,3}(?:\.\d{1,3})?)(?![\d]|\.\d)",
+                    re.I)
+FIG_KIND = {"р": ("fig", "рисунок", "рисунка"), "т": ("tab", "таблица", "таблицы")}
+
+
+def _num_key(n):
+    a, _, b = n.partition(".")
+    return (int(a), int(b)) if b else (0, int(a))
+
+
+def figures(idx, st):
+    """Нумерация рисунков и таблиц: повторы, пропуски, нарушенный порядок, ссылки на несуществующие номера."""
+    if not st.get("check_figures", True):
+        return []
+    caps = {"fig": [], "tab": []}
+    refs = []
+    for page in sorted(idx.pages):
+        for zone, _, ln in idx.pages[page]["items"]:
+            if zone != "body":
+                continue
+            text = ln["text"]
+            m = CAPTION.match(text)
+            cap_end = -1
+            if m and not re.search(r"(?i)продолж|окончан", text):
+                k = FIG_KIND[m.group(1)[0].lower()][0]
+                caps[k].append({"num": m.group(2), "page": page, "line": text, "label": m.group(0).strip()})
+                cap_end = m.end()
+            for r in FIGREF.finditer(text):
+                if r.start() < cap_end or (r.start() == 0 and m):
+                    continue
+                refs.append({"kind": FIG_KIND[r.group(1)[0].lower()][0], "num": r.group(2), "page": page, "line": text,
+                             "label": r.group(0)})
+    H = []
+    for k, items in caps.items():
+        if not items:
+            continue
+        name, gen = {"fig": ("рисунок", "рисунка"), "tab": ("таблица", "таблицы")}[k]
+        seen = {}
+        for c in items:                               # повторы номера
+            if c["num"] in seen:
+                p0 = seen[c["num"]]["page"]
+                H.append(hit("figures", c["page"], c["line"], c["label"], None, AUTHOR,
+                             f"Номер {gen} {c['num']} уже использован на стр. {p0}: у каждого {gen} должен быть свой номер.",
+                             group=("figures", k, "dup", c["num"], c["page"]), clause="нумерация"))
+            else:
+                seen[c["num"]] = c
+        groups = defaultdict(list)                    # пропуски и порядок — внутри раздела (2.1, 2.2 …)
+        for c in seen.values():
+            groups[c["num"].partition(".")[0] if "." in c["num"] else ""].append(c)
+        for g, lst in groups.items():
+            present = {_num_key(c["num"])[1] for c in lst}
+            prev = None
+            for c in lst:                             # в порядке появления в документе
+                key = _num_key(c["num"])
+                if prev is not None and key < _num_key(prev["num"]):
+                    H.append(hit("figures", c["page"], c["line"], c["label"], None, AUTHOR,
+                                 f"Нарушен порядок нумерации: {name} {c['num']} стоит после {gen} {prev['num']} "
+                                 f"(стр. {prev['page']}).", group=("figures", k, "ord", c["num"]), clause="нумерация"))
+                elif prev is not None and key[1] - _num_key(prev["num"])[1] > 1 and key[0] == _num_key(prev["num"])[0] \
+                        and [x for x in range(_num_key(prev["num"])[1] + 1, key[1]) if x not in present]:
+                    miss = [x for x in range(_num_key(prev["num"])[1] + 1, key[1]) if x not in present]
+                    nums = ", ".join((f"{g}." if g else "") + str(x) for x in miss[:5])
+                    H.append(hit("figures", c["page"], c["line"], c["label"], None, AUTHOR,
+                                 f"После {gen} {prev['num']} (стр. {prev['page']}) идет {name} {c['num']} — "
+                                 f"пропущен номер {nums}.", group=("figures", k, "gap", c["num"]), clause="нумерация"))
+                prev = c
+        have = set(seen)
+        for r in refs:                                # ссылки на несуществующие номера
+            if r["kind"] != k or r["num"] in have:
+                continue
+            nums = sorted(have, key=_num_key)
+            H.append(hit("figures", r["page"], r["line"], r["label"], None, AUTHOR,
+                         f"Ссылка «{r['label']}», а {gen} с таким номером в документе нет "
+                         f"(есть: {', '.join(nums[:8])}{' …' if len(nums) > 8 else ''}).",
+                         group=("figures", k, "ref", r["num"], r["page"]), clause="ссылка"))
+    return H
+
+
 # ------------------------------------------------------------------ сборка замечаний
 def to_finding(h):
     """Попадание → строка отчета (цитата дословно из строки, исправление — та же цитата)."""
@@ -426,8 +522,8 @@ def build_findings(hits, threshold):
             if not f:
                 continue
             examples = sorted({yo(h["bad"]) for h in hs})[:4]
-            f["clause"] = f"системно: стр. {page_list(pages)} ({len(hs)} раз)"
-            f["note"] = (f["note"] + f" Системно: {len(hs)} мест" +
+            f["clause"] = f"системно: стр. {page_list(pages)} ({len(hs)} {plural(len(hs), 'раз', 'раза', 'раз')})"
+            f["note"] = (f["note"] + f" Системно: {len(hs)} {plural(len(hs), 'место', 'места', 'мест')}" +
                          (f", например {', '.join('«' + e + '»' for e in examples)}." if len(examples) > 1 else "."))
             f["systemic"] = len(hs)
             findings.append(f)

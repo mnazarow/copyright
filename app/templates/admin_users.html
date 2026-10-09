@@ -17,7 +17,7 @@
       <tr class="{{ '' if u.active else 'rejected' }}">
         <td><b>{{ u.login }}</b>{% if not u.active %} <span class="badge grey">отключен</span>{% endif %}</td>
         <td>{{ u.name or '—' }}{% if u.department %}<div class="muted small">{{ u.department }}</div>{% endif %}{% if u.email %}<div class="muted small">{{ u.email }}</div>{% endif %}</td>
-        <td>{{ ROLES.get(u.role, u.role) }}</td><td>{{ {'ldap': 'LDAP', 'oidc': 'единый вход'}.get(u.source, 'пароль') }}{% if u.totp %} + код{% endif %}</td>
+        <td>{{ ROLES.get(u.role, u.role) }}</td><td>{{ {'ldap': 'LDAP', 'oidc': 'единый вход', 'cert': 'сертификат'}.get(u.source, 'пароль') }}{% if u.totp %} + код{% endif %}</td>
         <td>{{ counts.get(u.login, 0) }}</td><td class="small">{{ (u.last_login or '—').replace('T', ' ')[:16] }}</td>
         <td class="nowrap"><button type="button" class="btn small ghost" onclick='editUser({{ u|tojson }})'>Изменить</button>
           {% if u.totp %}<form method="post" action="/admin/users/reset-2fa" style="display:inline" onsubmit="return confirm('Отключить второй фактор пользователя {{ u.login }}? Он войдет по паролю и подключит код заново.')">

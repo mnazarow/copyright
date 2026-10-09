@@ -6,7 +6,7 @@ import csv
 COLS = ["№", "Стр., пункт", "Тип", "Как в документе", "Как правильно", "Пояснение"]
 
 
-CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff\ufffe\uffff]")
 
 
 def safe(v):

@@ -146,9 +146,11 @@ def required(user, st):
     """Обязателен ли второй фактор для пользователя по настройке «Двухфакторный вход обязателен для»."""
     if not user or user.get("source") in ("oidc", "token"):
         return False                                   # при едином входе второй фактор — на сервере учетных записей
+    if user.get("source") == "cert" and st.get("cert_counts_as_2fa", True):
+        return False                                   # сертификат на смарт-карте — сам второй фактор
     need = st.get("totp_required") or "none"
     role = user.get("role")
-    return (need == "all" or (need == "correctors" and role in ("corrector", "admin"))
+    return (need == "all" or (need == "correctors" and role in ("corrector", "manager", "admin"))
             or (need == "admins" and role == "admin"))
 
 

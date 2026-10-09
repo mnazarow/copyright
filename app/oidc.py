@@ -152,8 +152,11 @@ def role_from_claims(st, claims):
         have |= {x.strip("/").lower() for x in _values(node)}
     admins = {x.strip().strip("/").lower() for x in (st.get("oidc_admin_values") or "").split(",") if x.strip()}
     correctors = {x.strip().strip("/").lower() for x in (st.get("oidc_corrector_values") or "").split(",") if x.strip()}
+    managers = {x.strip().strip("/").lower() for x in (st.get("oidc_manager_values") or "").split(",") if x.strip()}
     if admins & have:
         return "admin"
+    if managers & have:
+        return "manager"
     if correctors & have:
         return "corrector"
     return None
@@ -165,7 +168,8 @@ def provision(st, claims):
     key = claims.get("_iss_sub") or ""
     raw = str(claims.get(st.get("oidc_login_claim") or "preferred_username") or claims.get("email") or claims.get("sub") or "")
     mapped = role_from_claims(st, claims)
-    mapping_on = bool((st.get("oidc_admin_values") or "").strip() or (st.get("oidc_corrector_values") or "").strip())
+    mapping_on = bool((st.get("oidc_admin_values") or "").strip() or (st.get("oidc_corrector_values") or "").strip()
+                      or (st.get("oidc_manager_values") or "").strip())
     u = users.by_oidc_sub(key) if key else None
     if not u:
         login = raw[:64]

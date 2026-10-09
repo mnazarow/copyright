@@ -17,7 +17,9 @@ PREP = set("в во на за к ко с со о об обо от ото по д
 UNION = set("и а но да или либо что чтобы как если чем то тоже также причем притом зато однако когда пока хотя будто словно точно".split())
 PART = set("не ни же ли бы б ведь вот вон лишь только именно даже уж уже".split())
 STOP = PREP | UNION | PART
-CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # управляющие знаки из PDF ломают DOCX/XLSX
+if os.environ.get("KORREKTOR_HANGING_WORDS"):            # список из настройки «Список висячих слов»
+    STOP = {w.lower() for w in os.environ["KORREKTOR_HANGING_WORDS"].split() if w.strip()}
+CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff\ufffe\uffff]")   # управляющие знаки из PDF ломают DOCX/XLSX
 CLAUSE = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+|\d{1,2})\s*[.\t]")
 
 def kind(ch):
@@ -124,7 +126,10 @@ def _join(parts):
     return {"bbox": (x0, y0, x1, y1), "spans": [{"text": chars_txt, "size": size}], "_src": src}
 
 
+PROGRESS = bool(os.environ.get("KORREKTOR_PROGRESS"))      # ход разбора для журнала задания (строки «@progress N/M»)
 for pno, page in enumerate(doc, 1):
+    if PROGRESS:
+        print(f"@progress {pno}/{doc.page_count}", file=sys.stderr, flush=True)
     h, w = page.rect.height, page.rect.width
     d = page.get_text("rawdict")
     for _b in d["blocks"]:                             # rawdict: текст span собирается из символов

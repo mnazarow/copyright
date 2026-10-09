@@ -7,9 +7,9 @@ FROM python:3.12-slim
 ARG WITH_OCR=0
 ARG WITH_OFFICE=1
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    KORREKTOR_DATA=/data KORREKTOR_HOST=0.0.0.0 KORREKTOR_PORT=8080 KORREKTOR_LOG=INFO
+    KORREKTOR_DATA=/data KORREKTOR_HOST=0.0.0.0 KORREKTOR_PORT=8080 KORREKTOR_LOG=INFO TZ=Europe/Moscow
 
-RUN apt-get update && apt-get install -y --no-install-recommends hunspell hunspell-ru fonts-dejavu-core fonts-liberation \
+RUN apt-get update && apt-get install -y --no-install-recommends hunspell hunspell-ru fonts-dejavu-core fonts-liberation tzdata \
     && if [ "$WITH_OCR" = "1" ]; then apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus; fi \
     && if [ "$WITH_OFFICE" = "1" ]; then apt-get install -y --no-install-recommends libreoffice-writer-nogui fonts-crosextra-carlito; fi \
     && rm -rf /var/lib/apt/lists/*

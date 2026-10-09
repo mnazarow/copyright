@@ -301,6 +301,8 @@ cat >/usr/local/bin/korrektor <<'EOF'
 APP=korrektor; ENVF=/etc/korrektor/korrektor.env; DATA=/var/lib/korrektor; PREFIX=/opt/korrektor
 need_root() { [ "$(id -u)" -eq 0 ] || { echo "Нужны права администратора: sudo korrektor $*"; exit 1; }; }
 port() { grep '^KORREKTOR_PORT=' $ENVF 2>/dev/null | cut -d= -f2; }
+# адрес для проверки ответа: адрес прослушивания, а для «все адреса» — 127.0.0.1
+hchost() { H=$(grep '^KORREKTOR_HOST=' $ENVF 2>/dev/null | cut -d= -f2); case "$H" in ""|0.0.0.0|::) echo 127.0.0.1;; *:*) echo "[$H]";; *) echo "$H";; esac; }
 # python программы от имени службы; переменные — из файла (не в командной строке: их не видно в ps)
 py() {
   if command -v runuser >/dev/null; then
@@ -310,7 +312,7 @@ py() {
   fi
 }
 case "${1:-help}" in
-  status)  systemctl status $APP --no-pager; echo; curl -s "http://127.0.0.1:$(port)/api/health"; echo;;
+  status)  systemctl status $APP --no-pager; echo; curl -s "http://$(hchost):$(port)/api/health"; echo;;
   start|stop|restart) need_root "$@"; systemctl "$1" $APP && echo "Готово: $1";;
   logs)    journalctl -u $APP -n "${2:-200}" --no-pager;;
   follow)  journalctl -u $APP -f;;
@@ -332,8 +334,18 @@ case "${1:-help}" in
            systemctl stop $APP
            py -m app.backup restore "$(readlink -f "$2")"; RC=$?
            if [ "${3:-}" = "--with-env" ]; then
-             T=$(mktemp -d); tar xzf "$2" -C "$T" etc/korrektor.env etc/korrektor/korrektor.env 2>/dev/null
-             for E in "$T/etc/korrektor.env" "$T/etc/korrektor/korrektor.env"; do [ -f "$E" ] && install -m 640 -o root -g $APP "$E" $ENVF && echo "Файл настроек службы восстановлен"; done
+             T=$(mktemp -d); A="$2"
+             if [ "$(head -c 14 "$2")" = "KORREKTOR-ENC1" ]; then      # зашифрованная копия — сначала расшифровать
+               chown $APP "$T"; py -m app.backup decrypt "$(readlink -f "$2")" "$T/plain.tgz" && A="$T/plain.tgz"
+             fi
+             tar xzf "$A" -C "$T" etc/korrektor.env etc/korrektor/korrektor.env 2>/dev/null
+             for E in "$T/etc/korrektor.env" "$T/etc/korrektor/korrektor.env"; do
+               [ -f "$E" ] || continue
+               for V in KORREKTOR_SECRET KORREKTOR_ADMIN_PASSWORD; do   # в незашифрованной копии их нет — берем текущие
+                 grep -q "^$V=" "$E" || grep "^$V=" $ENVF >>"$E"
+               done
+               install -m 640 -o root -g $APP "$E" $ENVF && echo "Файл настроек службы восстановлен"
+             done
              rm -rf "$T"
            fi
            chown -R $APP:$APP $DATA; systemctl start $APP; [ $RC -eq 0 ] && echo "Восстановлено из $2";;
@@ -353,7 +365,8 @@ case "${1:-help}" in
   sudo korrektor password     показать текущий пароль
   sudo korrektor backup       резервная копия данных и настроек в /var/backups/korrektor
   sudo korrektor verify Ф     проверить целостность резервной копии
-  sudo korrektor restore Ф    восстановить из копии (--with-env — и файл настроек службы)
+  sudo korrektor restore Ф    восстановить из копии (--with-env — и файл настроек службы);
+                              для зашифрованной (.tgz.enc) пароль — из настроек или KORREKTOR_BACKUP_PASSWORD
   sudo korrektor 2fa-off Л     отключить двухфакторный вход пользователя Л (потерян телефон)
   sudo korrektor update [...] обновить (ключи как у update.sh)
   sudo korrektor uninstall    удалить (ключ --purge удалит и данные)
@@ -363,7 +376,8 @@ H
 esac
 EOF
 chmod 755 /usr/local/bin/korrektor
-ln -sf /usr/local/bin/korrektor /usr/local/bin/korrektor-passwd 2>/dev/null || true
+# короткая команда «korrektor-passwd» = «korrektor passwd» (раньше была ссылкой и только показывала справку)
+printf '#!/usr/bin/env bash\nexec /usr/local/bin/korrektor passwd "$@"\n' >/usr/local/bin/korrektor-passwd && chmod 755 /usr/local/bin/korrektor-passwd
 ok "Установлена команда управления: korrektor"
 
 # начальные настройки (только при первой установке)
@@ -428,10 +442,11 @@ if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
   systemctl restart $APP
   [ $WITH_NGINX -eq 1 ] && { systemctl enable nginx >>"$LOG" 2>&1; systemctl restart nginx; }
   say "Проверка запуска"
+  case "$LISTEN" in ""|0.0.0.0|::) HC=127.0.0.1;; *:*) HC="[$LISTEN]";; *) HC="$LISTEN";; esac
   for i in $(seq 1 30); do
-    curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 1
+    curl -fs "http://$HC:$PORT/api/health" >/dev/null 2>&1 && break; sleep 1
   done
-  curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 || die "Служба не отвечает. Журнал: journalctl -u $APP -n 50"
+  curl -fs "http://$HC:$PORT/api/health" >/dev/null 2>&1 || die "Служба не отвечает. Журнал: journalctl -u $APP -n 50"
   ok "Служба $APP запущена"
 else
   warn "systemd не найден (контейнер?). Запуск вручную:"

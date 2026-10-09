@@ -22,7 +22,7 @@
 <body data-role="{{ user.role if user else '' }}">
 <div class="topbar"><div class="wrap">
   <span>Внутренний сервис корректорской вычитки · мастер-промпт v5.7</span>
-  <span><button type="button" class="theme-tg" id="theme-tg" title="Светлая / темная тема / как в системе">◐</button> · {% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} · версия {{ version }}
+  <span><button type="button" class="theme-tg" id="theme-tg" title="Светлая / темная тема / как в системе">◐</button> ·{% if user %} {% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} ·{% endif %} версия {{ version }}
   {% if user and page != 'login' %} · <a href="/account" title="Профиль">{{ user.name or user.login }}</a> ({{ ROLES.get(user.role, '') }})
     {% if can('admin') %} · <a href="/admin/users">Пользователи</a> · <a href="/admin/audit">Журнал</a>{% endif %}
     {% if auth_on %} · <a href="/logout">Выйти</a>{% endif %}{% endif %}</span>

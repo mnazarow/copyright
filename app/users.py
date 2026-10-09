@@ -3,6 +3,7 @@
 
 Роли:
   admin     — администратор: все, включая настройки, пользователей и журнал;
+  manager   — руководитель: все, что корректор, плюс утверждение документов (последний этап согласования);
   corrector — корректор: загрузка, отметки ✓ ✕ ✎, пересборка, массовые действия, белый список и глоссарий;
   author    — автор: загрузка документов, просмотр и скачивание отчетов, удаление своих заданий.
 
@@ -18,8 +19,8 @@ import secrets
 
 from . import core
 
-ROLES = {"admin": "администратор", "corrector": "корректор", "author": "автор"}
-RANK = {"author": 1, "corrector": 2, "admin": 3}
+ROLES = {"admin": "администратор", "manager": "руководитель", "corrector": "корректор", "author": "автор"}
+RANK = {"author": 1, "corrector": 2, "manager": 3, "admin": 4}
 BUILTIN = "admin"
 LOGIN_RE = re.compile(r"^[\w.@-]{2,64}$")
 EMAIL_RE = re.compile(r"^[^@\s,;<>\"']{1,64}@[^@\s,;<>\"']{1,190}\.[^@\s,;<>\"'.]{2,24}$")
@@ -222,7 +223,8 @@ def ldap_bind(login, password, st):
 def can(user, action):
     """Действия: view, upload, review (✓ ✕ ✎, пересборка), manage (белый список, глоссарий, массовые действия),
     admin (настройки, пользователи, журнал)."""
-    need = {"view": "author", "upload": "author", "review": "corrector", "manage": "corrector", "admin": "admin"}[action]
+    need = {"view": "author", "upload": "author", "review": "corrector", "manage": "corrector", "sign": "manager",
+            "admin": "admin"}[action]
     return bool(user) and RANK.get(user.get("role"), 0) >= RANK[need]
 
 
@@ -337,7 +339,8 @@ def audit(request, action, target="", detail=""):
 
 AUDIT_NAMES = {
     "login": "вход", "login_failed": "неудачный вход", "logout": "выход", "upload": "загрузка документа",
-    "job_delete": "удаление задания", "job_restart": "повторная проверка", "finding": "изменение замечания",
+    "job_delete": "удаление задания", "job_restart": "повторная проверка", "job_cancel": "остановка задания",
+    "finding": "изменение замечания",
     "rebuild": "пересборка отчета", "bulk": "массовая отметка", "whitelist": "белый список",
     "glossary": "глоссарий", "settings": "изменение настроек", "settings_import": "загрузка настроек",
     "settings_reset": "сброс настроек", "prompt": "мастер-промпт", "token": "новый токен API",
@@ -345,7 +348,7 @@ AUDIT_NAMES = {
     "download": "скачивание", "backup": "резервная копия", "restore": "восстановление из копии",
     "backup_upload": "загрузка копии", "remind": "напоминания", "totp": "двухфакторный вход",
     "mgmt_report": "отчет для руководства", "products": "справочник продукции",
-    "profile": "профиль изменен", "bitrix": "задача в Битрикс24",
+    "profile": "профиль изменен", "bitrix": "задача в Битрикс24", "workflow": "согласование",
 }
 
 

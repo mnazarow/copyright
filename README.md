@@ -4,16 +4,20 @@
 Загрузите PDF — получите отчет DOCX (альбомная таблица «как в документе → как правильно»), PDF с пометками,
 XLSX и JSON. Отчет собирается и проверяется кодом: 25 машинных требований оформления и полноты.
 
-Возможности: прием PDF и Word; правки прямо в исходном DOCX (рецензирование); аналитика и тренды с целями
-качества; сравнение версий; стандарт оформления (шрифты, кегли, цвета, поля) и сверка со справочником продукции 1С,
-включая таблицы характеристик; контроль разбора и напоминания; задачи в Битрикс24; отчет для руководства в PDF;
-роли, LDAP, единый вход (OIDC), двухфакторный вход, разделение по отделам, ограничение по сетям, журнал действий;
-уведомления (почта, Telegram, вебхук); резервные копии с проверкой и восстановлением; метрики Prometheus; Docker.
+Возможности: прием PDF и Word; правки прямо в исходном DOCX (рецензирование) и скрипт правок для Adobe InDesign;
+вычитка языковой моделью (Anthropic, OpenAI-совместимые, Ollama) с потоковым ответом, тайм-аутами, повторами и
+журналом обработки в реальном времени; кнопка «Остановить»; согласование документов (корректор → руководитель);
+аналитика и тренды с целями качества; сравнение версий и сверка языковых версий (RU/EN); стандарт оформления
+(шрифты, кегли, цвета, поля), одинаковые изображения у разных изделий, нумерация рисунков и таблиц, сверка со
+справочником продукции 1С, включая таблицы характеристик; контроль разбора и напоминания; задачи в Битрикс24; отчет
+для руководства в PDF; роли, LDAP, единый вход (OIDC), вход по сертификату (смарт-карте), двухфакторный вход,
+разделение по отделам, ограничение по сетям, журнал действий; уведомления (почта, Telegram, вебхук); резервные копии
+с шифрованием, проверкой и восстановлением; метрики Prometheus; Docker.
 
 ## Установка одной командой
 
 ```bash
-sudo bash korrektor-1.5.0-installer.sh            # самораспаковывающийся установщик
+sudo bash korrektor-1.6.0-installer.sh            # самораспаковывающийся установщик
 # или из распакованной папки:
 sudo bash scripts/install.sh
 ```
@@ -39,7 +43,7 @@ sudo bash scripts/install.sh
 | [docs/users.md](docs/users.md) | пользователи, роли, вход, второй фактор, отделы, сети, журнал |
 | [docs/integrations.md](docs/integrations.md) | уведомления, напоминания, отчет для руководства, Битрикс24, метрики |
 | [docs/standards.md](docs/standards.md) | стандарт оформления и справочник продукции |
-| [docs/settings.md](docs/settings.md) | справочник всех 172 настроек |
+| [docs/settings.md](docs/settings.md) | справочник всех 197 настроек |
 | [docs/installation.md](docs/installation.md) | установка, обновление, удаление |
 | [docs/administration.md](docs/administration.md) | администрирование и безопасность |
 | [docs/api.md](docs/api.md) | REST API |
@@ -49,10 +53,11 @@ sudo bash scripts/install.sh
 ## Состав
 
 ```
-app/            веб-сервис (FastAPI): main.py, admin.py, core.py, users.py, totp.py, oidc.py, notify.py,
-                analytics.py, compare.py, control.py, backup.py, report_pdf.py, batch.py, settings_schema.py
+app/            веб-сервис (FastAPI): main.py, admin.py, core.py, users.py, totp.py, oidc.py, certlogin.py,
+                notify.py, analytics.py, compare.py, langcmp.py, control.py, workflow.py, backup.py, crypt.py,
+                report_pdf.py, batch.py, settings_schema.py
 app/pipeline/   конвейер проверки: правила, словарь, ИИ, технический контроль, отчеты
-app/pipeline/scripts/   extract.py, build.py, verify.py — дословно из мастер-промпта v5.7
+app/pipeline/scripts/   extract.py, build.py, verify.py — по мастер-промпту v5.7 (ход разбора, фильтр управляющих знаков)
 app/prompts/    мастер-промпт
 app/templates/, app/static/   интерфейс в стиле vodokomfort.ru
 tests/          автоматические тесты (python3 -m pytest -q tests/)

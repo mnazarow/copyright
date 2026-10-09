@@ -15,6 +15,7 @@ import time
 import traceback
 import uuid
 
+from .pipeline.common import dur
 from .settings_schema import DEFAULTS, SCHEMA
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -80,7 +81,14 @@ def load_settings():
             saved = json.load(open(SETTINGS_FILE, encoding="utf-8"))
         except Exception:  # noqa
             log.exception("settings.json поврежден, используются значения по умолчанию")
-    st.update(saved)
+    for k, v in saved.items():                        # значения проверяются по схеме: испорченный файл не роняет проверки
+        if k in SCHEMA:
+            try:
+                st[k] = coerce(k, v)
+            except Exception:  # noqa
+                st[k] = DEFAULTS[k]
+        else:
+            st[k] = v
     if saved and int(saved.get("_version") or 0) < SETTINGS_VERSION:
         _migrate(st)
         try:
@@ -95,7 +103,8 @@ def update_settings(fn):
     with _lock:
         st = load_settings()
         fn(st)
-        clean = {k: v for k, v in st.items() if k in SCHEMA or k == "_version"}
+        clean = {k: v for k, v in st.items() if k in SCHEMA}
+        clean["_version"] = SETTINGS_VERSION
         tmp = SETTINGS_FILE + ".tmp"
         json.dump(clean, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         os.chmod(tmp, 0o600)
@@ -133,7 +142,9 @@ def coerce(key, raw):
             return s["default"]
         return max(s.get("min", v), min(s.get("max", v), v))
     if t == "multi":
-        return list(raw) if isinstance(raw, (list, tuple)) else [raw] if raw else []
+        vals = list(raw) if isinstance(raw, (list, tuple)) else [raw] if raw else []
+        allowed = {o[0] for o in s.get("options") or []}
+        return [v for v in vals if isinstance(v, str) and (not allowed or v in allowed)]
     if t == "select":
         allowed = [o[0] for o in s["options"]]
         return raw if raw in allowed else s["default"]
@@ -164,12 +175,17 @@ def init_db():
             error TEXT DEFAULT '', size INTEGER DEFAULT 0, settings TEXT DEFAULT '{}', finished TEXT)""")
         cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
         for col, ddl in (("started", "TEXT"), ("owner", "TEXT DEFAULT ''"), ("author", "TEXT DEFAULT ''"),
-                         ("department", "TEXT DEFAULT ''"), ("doc_type", "TEXT DEFAULT ''")):   # миграции 1.0–1.2
+                         ("department", "TEXT DEFAULT ''"), ("doc_type", "TEXT DEFAULT ''"),   # миграции 1.0–1.2
+                         ("beat", "REAL DEFAULT 0")):          # 1.6: время последних признаков работы задания
             if col not in cols:
                 c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
         c.execute("CREATE INDEX IF NOT EXISTS jobs_batch ON jobs(batch)")
         c.execute("CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status)")
         c.execute("UPDATE jobs SET status='queued', progress=0 WHERE status='running'")
+        c.execute("UPDATE jobs SET status='failed', error='загрузка прервана перезапуском службы', step='Ошибка' "
+                  "WHERE status='uploading'")
+    from . import workflow
+    workflow.init()
 
 
 def job_dir(jid):
@@ -225,10 +241,23 @@ def create_job(batch, name, filename, size, settings, owner="", author="", depar
         return cur.lastrowid
 
 
+def claim_idle(jid, status):
+    """Атомарно переводит задание, которое сейчас не обрабатывается, в служебное состояние (удаление, перезапуск):
+    обработчик не успеет взять его в работу между проверкой и действием. → True, если удалось."""
+    with _lock:
+        with db() as c:
+            return c.execute("UPDATE jobs SET status=? WHERE id=? AND status IN ('done', 'failed', 'queued')",
+                             (status, jid)).rowcount == 1
+
+
 def delete_job(jid):
     shutil.rmtree(job_dir(jid), ignore_errors=True)
     with db() as c:
         c.execute("DELETE FROM jobs WHERE id=?", (jid,))
+        try:
+            c.execute("DELETE FROM job_events WHERE job=?", (jid,))   # история согласования удаленного задания
+        except sqlite3.OperationalError:
+            pass
 
 
 _state_locks = collections.defaultdict(threading.RLock)
@@ -294,54 +323,174 @@ def kick():
     _queue_event.set()
 
 
+def explain_error(e):
+    """Понятное описание ошибки обработки (для страницы задания и журнала)."""
+    import errno
+    import subprocess
+    if isinstance(e, MemoryError):
+        return ("не хватило оперативной памяти сервера — уменьшите «Разрешение изображений страниц» или число "
+                "обработчиков, либо проверяйте документ частями")
+    if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        return "на диске сервера закончилось место — удалите старые задания или увеличьте диск"
+    if isinstance(e, PermissionError):
+        return f"нет прав на файл {e.filename or ''}: проверьте владельца папки данных ({DATA})".replace("  ", " ")
+    if isinstance(e, subprocess.TimeoutExpired):
+        return f"этап не уложился в {int(e.timeout or 0)} с и был прерван"
+    if isinstance(e, sqlite3.OperationalError) and "locked" in str(e):
+        return "база данных занята другой операцией (восстановление из копии?) — перезапустите проверку"
+    text = str(e).strip()
+    return text if text else e.__class__.__name__
+
+
+CANCEL = set()                      # задания, которые пользователь попросил остановить
+
+
+def cancel_job(jid):
+    """Остановка задания: из очереди — сразу, выполняющееся — при ближайшей проверке (обычно 1–2 секунды; запрос
+    к модели прерывается с разрывом соединения). → 'stopped', 'stopping' или None (задание уже завершено)."""
+    with _lock:
+        with db() as c:
+            if c.execute("UPDATE jobs SET status='failed', error=?, step='Остановлено' WHERE id=? AND status='queued'",
+                         ("остановлено пользователем до начала проверки", jid)).rowcount:
+                return "stopped"
+            row = c.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+            if not row or row["status"] != "running":
+                return None
+            if jid not in BUSY:             # «выполняется» в базе, но обработчика нет — сразу помечается остановленным
+                c.execute("UPDATE jobs SET status='failed', error=?, step='Остановлено' WHERE id=?",
+                          ("остановлено пользователем (обработчик задания не найден)", jid))
+                return "stopped"
+            CANCEL.add(jid)
+            return "stopping"
+
+
 def _process(jid):
     from .pipeline import run
+    from .pipeline.common import Cancelled
     from . import batch as batchmod
     job = get_job(jid)
     if not job:
         return
-    st = load_settings()
-    try:
-        st.update(json.loads(job.get("settings") or "{}"))
-    except ValueError:
-        pass
     d = job_dir(jid)
-    from .pipeline import office
-    if not os.path.exists(os.path.join(d, "source.pdf")) and not office.find_source(d):
-        update_job(jid, status="failed", error="исходный файл не найден", step="Ошибка")
+    try:
+        os.makedirs(d, exist_ok=True)
+        logf = open(os.path.join(d, "job.log"), "a", encoding="utf-8")
+    except OSError as e:
+        update_job(jid, status="failed", error="журнал задания не открывается: " + explain_error(e), step="Ошибка")
         return
-    logf = open(os.path.join(d, "job.log"), "a", encoding="utf-8")
+    wlock = threading.Lock()
+    beat = {"t": 0.0, "line": time.time()}
+    t_start = time.time()
+    stage = {"name": "Запуск", "t": t_start}
+    timing = []                                      # длительность этапов → timing.json (для аналитики)
+
+    def touch(now=None):
+        now = now or time.time()
+        if now - beat["t"] >= 3:                     # признак работы — не чаще раза в 3 секунды
+            beat["t"] = now
+            try:
+                update_job(jid, beat=now)
+            except sqlite3.Error:
+                pass
 
     def jlog(msg):
         line = f"{dt.datetime.now():%H:%M:%S} {msg}"
-        logf.write(line + "\n")
-        logf.flush()
+        beat["line"] = time.time()
+        with wlock:
+            try:
+                logf.write(line + "\n")
+                logf.flush()
+            except (OSError, ValueError):             # диск переполнен или журнал уже закрыт — задание не падает
+                pass
         log.info("job %s: %s", jid, msg)
+        touch()
 
-    timing = []                                      # длительность этапов → timing.json (для аналитики)
+    def should_stop():
+        return jid in CANCEL
 
     def progress(p, step=""):
+        if jid in CANCEL:
+            raise Cancelled()
         now = time.time()
-        if step and (not timing or timing[-1][0] != step):
+        if step and step != stage["name"]:
+            jlog(f"  ✓ {stage['name']} — {dur(now - stage['t'])}")
+            if step != "Готово":
+                jlog(f"▶ {step}")
+            stage.update(name=step, t=now)
             timing.append([step, now])
-        update_job(jid, progress=round(p, 3), step=step)
+        beat["t"] = now
+        update_job(jid, progress=round(p, 3), step=step, beat=now)
 
-    update_job(jid, status="running", progress=0.01, step="Запуск",
+    def status(msg):
+        """Строка состояния без записи в журнал (ход ожидания ответа модели)."""
+        if jid in CANCEL:
+            return
+        now = time.time()
+        beat["t"] = now
+        try:
+            update_job(jid, step=str(msg)[:300], beat=now)
+        except sqlite3.Error:
+            pass
+
+    quiet = threading.Event()
+
+    def watchdog():
+        """Долгий этап без записей в журнал (словарь на тысяче страниц, сборка отчета): раз в минуту — строка
+        «этап идет N мин», чтобы было видно, на чем задание и сколько оно на этом этапе."""
+        while not quiet.wait(5):
+            now = time.time()
+            if now - beat["line"] >= 60:
+                jlog(f"  … этап «{stage['name']}» идет {dur(now - stage['t'])}")
+
+    update_job(jid, status="running", progress=0.01, step="Запуск", beat=t_start,
                started=dt.datetime.now().isoformat(timespec="seconds"), error="")
+    threading.Thread(target=watchdog, daemon=True, name=f"job-{jid}-watchdog").start()
     try:
-        state = run.process(d, job["name"], st, jlog, progress, jid)
+        st = load_settings()
+        try:
+            st.update(json.loads(job.get("settings") or "{}"))
+        except ValueError:
+            jlog("⚠ настройки задания повреждены — используются общие настройки")
+        from .pipeline import office
+        if not os.path.exists(os.path.join(d, "source.pdf")) and not office.find_source(d):
+            raise RuntimeError("исходный файл задания не найден (удален или не восстановлен из копии)")
+        prov = st.get("ai_provider")
+        use_ai = st.get("mode") == "rules_ai" or (st.get("mode", "auto") == "auto" and prov not in (None, "", "none"))
+        jlog(f"■ Задание № {jid}: «{job.get('filename')}», " + f"{(job.get('size') or 0) / 2 ** 20:.1f}".replace(".", ",")
+             + f" МБ — Корректор {VERSION}")
+        jlog(f"Профиль «{st.get('profile')}», режим «{st.get('mode')}», проходы: {', '.join(st.get('passes') or []) or '—'}; "
+             + (f"ИИ: {prov}, модель {st.get('ai_model')}" if use_ai and prov not in (None, "", "none")
+                else "ИИ: не используется"))
+        jlog(f"▶ {stage['name']}")
+        state = run.process(d, job["name"], st, jlog, progress, jid, status=status, should_stop=should_stop)
         v = state["verify"]
+        jlog(f"■ Готово за {dur(time.time() - t_start)}: замечаний в отчете {v.get('count', 0)}, машинная проверка "
+             f"{v.get('passed', 0)}/{v.get('total', 0)}" + ("" if v.get("ok") else " — отчет не принят"))
         update_job(jid, status="done", progress=1, step="Готово", pages=state["pages"],
-                   findings=v.get("count", len(state["findings"])), verify_ok=1 if v.get("ok") else 0,
-                   verify_score=f"{v.get('passed', 0)}/{v.get('total', 0)}",
-                   finished=dt.datetime.now().isoformat(timespec="seconds"))
+                   findings=v.get("count", 0), verify_ok=1 if v.get("ok") else 0,
+                   verify_score=f"{v.get('passed', 0)}/{v.get('total', 0)}", error=v.get("error") or "",
+                   finished=dt.datetime.now().isoformat(timespec="seconds"), beat=time.time())
         _save_timing(d, timing)
-    except Exception as e:  # noqa
-        jlog("ОШИБКА: " + str(e))
-        jlog(traceback.format_exc())
-        update_job(jid, status="failed", error=str(e)[:500], step="Ошибка")
+    except Cancelled:
+        jlog(f"■ Остановлено пользователем на этапе «{stage['name']}» через {dur(time.time() - t_start)} после запуска")
+        update_job(jid, status="failed", error="остановлено пользователем", step="Остановлено",
+                   finished=dt.datetime.now().isoformat(timespec="seconds"))
+    except BaseException as e:  # noqa — любая ошибка (и MemoryError) завершает задание с понятной причиной
+        msg = explain_error(e)
+        jlog(f"✗ ОШИБКА на этапе «{stage['name']}»: {msg}")
+        jlog("Подробности для администратора:\n" + traceback.format_exc())
+        try:
+            update_job(jid, status="failed", error=f"{msg} (этап «{stage['name']}»)"[:500], step="Ошибка",
+                       finished=dt.datetime.now().isoformat(timespec="seconds"))
+        except Exception:  # noqa
+            log.exception("задание %s: статус ошибки не записан", jid)
+        if not isinstance(e, Exception):
+            raise                                    # KeyboardInterrupt, SystemExit — не глотаются
     finally:
-        logf.close()
+        quiet.set()
+        CANCEL.discard(jid)
+        with wlock:
+            logf.close()
     try:
         from . import notify
         notify.job_event_async(jid)
@@ -382,12 +531,12 @@ def worker_loop():
                     if r and c.execute("UPDATE jobs SET status='running' WHERE id=? AND status='queued'",
                                        (r["id"],)).rowcount:
                         jid = r["id"]
+                        BUSY.add(jid)                # под той же блокировкой, что и «Остановить» (cancel_job)
         except sqlite3.Error:
             log.exception("очередь заданий")
             time.sleep(5)
             continue
         if jid:
-            BUSY.add(jid)
             try:
                 _process(jid)
             except Exception:  # noqa — поток-обработчик не должен завершаться
@@ -403,16 +552,29 @@ def worker_loop():
         _queue_event.clear()
 
 
+def expired_jobs(st, now=None):
+    """Задания старше срока хранения. Документ на согласовании (взят в работу, возвращен, ждет утверждения)
+    не удаляется, пока согласование не завершено."""
+    days = int(st.get("retention_days") or 0)
+    if not days:
+        return []
+    limit = ((now or dt.datetime.now()) - dt.timedelta(days=days)).isoformat()
+    out = []
+    for j in list_jobs(100000):
+        if j["status"] not in ("done", "failed") or (j.get("finished") or j["created"]) >= limit:
+            continue
+        if st.get("workflow_enabled") and (j.get("wf_state") or "") in ("review", "returned", "approved"):
+            continue
+        out.append(j)
+    return out
+
+
 def cleanup_loop():
     while True:
         try:
-            days = int(load_settings().get("retention_days") or 0)
-            if days:
-                limit = (dt.datetime.now() - dt.timedelta(days=days)).isoformat()
-                for j in list_jobs(100000):
-                    if j["created"] < limit and j["status"] in ("done", "failed"):
-                        delete_job(j["id"])
-                        log.info("Удалено устаревшее задание %s", j["id"])
+            for j in expired_jobs(load_settings()):
+                delete_job(j["id"])
+                log.info("Удалено устаревшее задание %s", j["id"])
             from . import users
             users.cleanup_audit(int(load_settings().get("audit_days") or 365))
         except Exception:  # noqa
@@ -423,9 +585,17 @@ def cleanup_loop():
 _started = False
 
 
+def apply_log_level(st=None):
+    """Настройка «Подробность журнала» (действует сразу после сохранения; KORREKTOR_LOG — только до запуска)."""
+    lvl = (st or load_settings()).get("log_level") or "INFO"
+    logging.getLogger().setLevel(getattr(logging, lvl, logging.INFO))
+    log.setLevel(getattr(logging, lvl, logging.INFO))
+
+
 def start_workers():
     global _started
     init_db()
+    apply_log_level()
     if _started:
         return
     _started = True

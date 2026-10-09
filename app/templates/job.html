@@ -12,11 +12,16 @@
       {% if job.status == 'done' %}<a class="btn ghost small" href="/analytics?job={{ job.id }}" title="Графики и показатели этого документа">Аналитика</a>{% endif %}
       {% if job.status == 'done' %}<a class="btn ghost small" href="/compare?job={{ job.id }}" title="Что исправлено по сравнению с другой версией">Сравнить версии</a>{% endif %}
       {% if job.status == 'done' and st.bitrix_webhook and can('review') %}<button type="button" class="btn ghost small" onclick="testConn('/job/{{ job.id }}/bitrix', this)" title="Поставить автору задачу со ссылкой на отчет">Задача в Битрикс24</button><span class="muted small"></span>{% endif %}
-{% if can('review') or job.owner == user.login %}
+{% if can_stop %}
+      {% if job.status in ('queued','running') %}
+      <form method="post" action="/job/{{ job.id }}/cancel" onsubmit="return confirm('Остановить проверку? Выполненная часть работы не сохранится; документ можно будет проверить заново.')">
+        <button class="btn danger small" id="stop-btn">Остановить</button></form>
+      {% elif job.status != 'uploading' %}
       <form method="post" action="/job/{{ job.id }}/restart" onsubmit="return confirm('Проверить документ заново с текущими настройками? Ручные отметки будут потеряны.')">
         <button class="btn ghost small">Проверить заново</button></form>
       <form method="post" action="/job/{{ job.id }}/delete" onsubmit="return confirm('Удалить задание и все его файлы?')">
         <button class="btn danger small">Удалить</button></form>
+      {% endif %}
       {% endif %}
     </div>
   </div>
@@ -25,13 +30,18 @@
   <div class="card" id="running" data-job="{{ job.id }}">
     <h3 id="step">{{ job.step or 'В очереди' }}</h3>
     <div class="progress"><i id="bar" style="width:{{ (job.progress*100)|int }}%"></i></div>
-    <p class="muted">Каталог на 50 страниц проверяется правилами за 15–40 секунд; с языковой моделью — несколько минут.
-    Страницу можно закрыть: задание продолжит выполняться.</p>
+    <p class="small" id="run-info"></p>
+    <p class="muted">Каталог на 50 страниц проверяется правилами за 15–40 секунд; с языковой моделью — от нескольких минут
+    (локальной модели — дольше). Ход работы виден в журнале ниже. Страницу можно закрыть: задание продолжит выполняться.</p>
   </div>
   {% elif job.status == 'failed' %}
-  <div class="notice warn"><b>Проверка не выполнена.</b> {{ job.error }}<br>Подробности — в журнале ниже.
+  <div class="notice warn"><b>{{ 'Проверка остановлена.' if job.step == 'Остановлено' else 'Проверка не выполнена.' }}</b> {{ job.error }}<br>Подробности — в журнале ниже.
   Частые причины описаны в разделе <a href="/docs/faq">«Вопросы и неполадки»</a>.</div>
   {% endif %}
+  {% if ai_gap %}<div class="notice warn"><b>Языковая модель проверила не все страницы.</b> {{ ai_gap }}. Причины — в журнале
+    обработки (строки «ИИ ✗»). Правила проверили документ полностью. После исправления причины нажмите «Проверить заново».</div>{% endif %}
+  {% if state and state.warnings %}<div class="notice warn"><b>Часть проверок пропущена из-за ошибки:</b> {{ state.warnings|join('; ') }}.
+    Остальные проверки выполнены; подробности — в журнале обработки.</div>{% endif %}
 
   {% if state %}
   {% set v = state.verify %}
@@ -43,6 +53,28 @@
       <span>машинная проверка оформления {{ '— отчет принят' if v.ok else '— отчет НЕ принят' }}</span></div>
   </div>
 
+  {% if wf %}
+  <div class="card wf" id="workflow" style="margin-bottom:20px">
+    <h3>Согласование: <span class="badge {{ {'signed':'ok','approved':'ok','returned':'warn','review':'','':'grey'}[wf.state] }}">{{ wf.label }}</span>
+      {% if wf.due %}<span class="muted small" style="font-weight:400">· срок этапа {{ wf.due }}{% if wf.overdue %} — <span class="bad-t">просрочено</span>{% endif %}</span>{% endif %}</h3>
+    {% if wf.error %}<div class="notice warn">{{ wf.error }}</div>{% endif %}
+    <ol class="wf-steps">{% for k in ['', 'review', 'approved', 'signed'] if k != 'signed' or st.workflow_sign_required %}
+      <li class="{{ 'done' if (wf.state in ['review','approved','signed'] and loop.index0 < ['', 'review', 'approved', 'signed'].index(wf.state)) else '' }} {{ 'cur' if k == wf.state else '' }}">{{ wf.names[k] }}</li>{% endfor %}
+      {% if wf.state == 'returned' %}<li class="cur ret">возвращен автору</li>{% endif %}</ol>
+    {% if wf.actions %}
+    <form method="post" action="/job/{{ job.id }}/workflow" class="wf-form">
+      <textarea name="comment" rows="2" placeholder="Комментарий (для возврата автору — что исправить)"></textarea>
+      <div class="dl">{% for a, label, need in wf.actions %}
+        <button class="btn {{ 'ghost' if a not in ('approve','sign') else '' }} small" name="action" value="{{ a }}"
+          {% if a in ('approve',) and wf.blockers %}title="{{ wf.blockers|join('; ') }}"{% endif %}>{{ label }}</button>{% endfor %}</div>
+      {% if wf.blockers and 'approve' in (wf.actions|map(attribute=0)|list) %}<p class="small muted">Согласовать пока нельзя: {{ wf.blockers|join('; ') }}.</p>{% endif %}
+    </form>{% endif %}
+    {% if wf.history %}<details{% if wf.state == 'returned' %} open{% endif %}><summary>История ({{ wf.history|length }})</summary>
+      <table class="t compact small">{% for h in wf.history|reverse %}<tr><td class="nowrap">{{ h.ts.replace('T', ' ')[:16] }}</td><td>{{ h.user or '—' }}</td>
+        <td>{{ wf.alabels.get(h.action, h.action) }} → <b>{{ wf.names.get(h.state_to, h.state_to) }}</b>{% if h.comment %}<br><span class="muted">{{ h.comment }}</span>{% endif %}</td></tr>{% endfor %}</table></details>{% endif %}
+  </div>
+  {% endif %}
+
   <div class="card">
     <h3>Скачать отчет</h3>
     <div class="dl">
@@ -53,6 +85,7 @@
       {% if files.xlsx %}<a class="btn ghost" href="/job/{{ job.id }}/file/xlsx">XLSX</a>{% endif %}
       {% if files.csv %}<a class="btn ghost" href="/job/{{ job.id }}/file/csv">CSV</a>{% endif %}
       {% if files.json %}<a class="btn ghost" href="/job/{{ job.id }}/file/json">findings.json</a>{% endif %}
+      {% if state.findings %}<a class="btn ghost" href="/job/{{ job.id }}/indesign.jsx" title="Скрипт для Adobe InDesign: вносит исправления в макет и отмечает места для проверки">Правки в InDesign</a>{% endif %}
       <a class="btn ghost" href="/job/{{ job.id }}/zip">Все одним архивом</a>
     </div>
     {% if not v.ok %}<div class="notice warn" style="margin-top:14px">Отчет не прошел машинную проверку (п. 0.9 мастер-промпта),
@@ -74,7 +107,26 @@
   </div>
   {% endif %}
 
-  {% set sty = state.style %}{% set prd = state.products %}
+  {% if st.check_running and state.running and state.running|length > 1 %}
+  <details class="card" style="margin-top:20px"><summary><b>Колонтитулы</b> <span class="muted small">— варианты текста и страницы: чужой или устаревший колонтитул виден сразу</span></summary>
+    <table class="t compact small" style="margin-top:10px"><tr><th>Текст колонтитула</th><th>Страницы</th></tr>
+    {% for text, pages in state.running|dictsort(by='value') %}<tr><td>{{ text }}</td><td>{{ pages|unique|list|join(', ') }}</td></tr>{% endfor %}</table>
+  </details>
+  {% endif %}
+  {% set sty = state.style %}{% set prd = state.products %}{% set img = state.images %}
+  {% if img and img.duplicates %}
+  <div class="card" style="margin-top:20px">
+    <h3>Изображения <span class="badge warn">одинаковых у разных изделий: {{ img.duplicates|length }}</span></h3>
+    <p class="muted small">Одна и та же картинка стоит рядом с разными обозначениями изделий. Проверьте, не попало ли фото или
+    чертеж одного изделия к другому. Всего изображений в документе: {{ img.images }}.</p>
+    {% for d in img.duplicates[:20] %}
+    <div class="imgdup">{% for p in d.places %}
+      <figure><a href="#" class="pgx" data-page="{{ p.page }}"><img loading="lazy" alt="стр. {{ p.page }}"
+        src="/job/{{ job.id }}/crop/{{ p.page }}.png?r={{ p.rect|join(',') }}"></a>
+        <figcaption>стр. {{ p.page }}<br><span class="muted">{{ p.label or '—' }}</span></figcaption></figure>{% endfor %}
+      <span class="badge grey">{{ 'одинаковые' if d.kind == 'same' else 'похожие' }}</span></div>{% endfor %}
+  </div>
+  {% endif %}
   {% if sty or prd %}
   <div class="grid g2" style="margin-top:20px">
   {% if sty %}
@@ -134,8 +186,9 @@
       {% endfor %}
     </table>
     <h3 style="margin-top:24px">Итог</h3>
-    <textarea id="summary">{{ state.meta.summary }}</textarea>
-    <p class="muted">Итог — 2–4 предложения без рекомендаций (п. 0.16); слова «рекомендуется», «следует проверить» не допускаются.</p>
+    <textarea id="summary" data-orig="{{ state.meta.summary }}">{{ state.meta.summary }}</textarea>
+    <p class="muted">Итог — 2–4 предложения без рекомендаций (п. 0.16); слова «рекомендуется», «следует проверить» не допускаются.
+    {% if state.summary_edited %}Итог изменен вручную и не пересобирается — очистите поле, чтобы он снова собирался автоматически.{% else %}Итог собирается автоматически по отмеченным замечаниям.{% endif %}</p>
     <p>{% if can('review') %}<button class="btn" id="rebuild" data-job="{{ job.id }}">Пересобрать отчет</button>{% endif %} <span id="rebuild-msg" class="muted"></span></p>
   </div>
 
@@ -153,7 +206,14 @@
   </div>
   {% endif %}
 
-  <details style="margin-top:20px"><summary>Журнал обработки</summary><pre class="log">{{ log }}</pre></details>
+  <details class="joblog" id="joblog-box" style="margin-top:20px" {% if job.status != 'done' %}open{% endif %}>
+    <summary>Журнал обработки{% if job.status in ('queued','running') %} — обновляется в реальном времени{% endif %}</summary>
+    {% if log_cut %}<p class="muted small">Показан конец журнала — <a href="/job/{{ job.id }}/log.txt">скачать целиком</a>.</p>{% endif %}
+    <pre class="log" id="joblog" data-offset="{{ log_offset }}">{{ log }}</pre>
+    <p class="small muted" style="margin-top:6px">{% if job.status in ('queued','running') %}<label><input type="checkbox" id="log-follow" checked>
+      прокручивать к новым строкам</label> · {% endif %}<a href="/job/{{ job.id }}/log.txt">Скачать журнал</a> ·
+      ▶ этап · ✓ готово · … ожидание · ⚠ предупреждение · ✗ ошибка</p>
+  </details>
 </div></section>
 
 <div class="viewer" id="viewer"><div class="box"><p style="display:flex;justify-content:space-between;margin-top:0">

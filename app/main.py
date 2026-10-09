@@ -16,19 +16,23 @@ import zipfile
 import zlib
 from urllib.parse import quote, urlsplit
 
+import http
 import markdown
 from markdown.extensions.toc import slugify_unicode
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import admin, analytics, oidc, totp, users
+from . import admin, analytics, oidc, totp, users, workflow
 from . import batch as batchmod
 from . import core
 from .pipeline import office, run
-from .pipeline.common import AUTHOR, TYPES
+from .pipeline.common import AUTHOR, TYPES, yo
 from .settings_schema import DEFAULTS, GROUPS, PROFILES, S, SCHEMA, profile_overrides
 
 @contextlib.asynccontextmanager
@@ -60,6 +64,93 @@ DOC_PAGES = [
     ("faq", "Вопросы и неполадки"),
 ]
 PUBLIC = ("/login", "/static", "/api/health")
+
+
+# ------------------------------------------------------------------ ошибки
+STATUS_TITLES = {400: "Неверный запрос", 401: "Требуется вход", 403: "Нет доступа", 404: "Не найдено",
+                 405: "Действие недоступно", 409: "Действие сейчас невозможно", 413: "Слишком большой файл",
+                 422: "Неверные данные", 429: "Слишком много запросов", 500: "Внутренняя ошибка",
+                 502: "Сервис недоступен", 503: "Сервис временно недоступен"}
+DEFAULT_MSG = {404: "Страница или задание не найдены — возможно, задание удалено или ссылка устарела.",
+               405: "Эту страницу нельзя открыть напрямую: действие выполняется кнопкой на странице сервиса.",
+               500: "Внутренняя ошибка сервиса — действие не выполнено."}
+
+
+def _wants_html(request):
+    """Ответ об ошибке страницей (браузер) или JSON (REST API, скрипты, запросы fetch)."""
+    if request.url.path.startswith("/api/"):
+        return False
+    return "text/html" in request.headers.get("accept", "")
+
+
+def _error_page(request, code, msg, eid=""):
+    title = STATUS_TITLES.get(code, f"Ошибка {code}")
+    try:
+        return tpl.TemplateResponse(request, "error.html", ctx(request, "error", title=title, msg=msg, eid=eid, code=code),
+                                    status_code=code)
+    except Exception:  # noqa — страница ошибки не должна сама падать
+        core.log.exception("страница ошибки")
+        return HTMLResponse(f"<!doctype html><meta charset='utf-8'><title>{html_escape(title)}</title>"
+                            f"<div style='font:16px Arial;margin:40px'><h2>{html_escape(title)}</h2><p>{html_escape(msg)}</p>"
+                            + (f"<p>Номер ошибки: {html_escape(eid)}</p>" if eid else "") + "<p><a href='/'>На главную</a></p></div>",
+                            status_code=code)
+
+
+def _deny(request, code, msg):
+    """Отказ из промежуточного слоя: страница для браузера, JSON для REST API."""
+    if _wants_html(request):
+        return _error_page(request, code, msg)
+    return JSONResponse({"error": msg}, status_code=code)
+
+
+def _phrase(code):
+    try:
+        return http.HTTPStatus(code).phrase
+    except ValueError:
+        return ""
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException):
+    code = exc.status_code
+    detail = exc.detail if isinstance(exc.detail, str) else ""
+    msg = detail if detail and detail != _phrase(code) else DEFAULT_MSG.get(code, STATUS_TITLES.get(code, f"Ошибка {code}"))
+    resp = _error_page(request, code, msg) if _wants_html(request) else JSONResponse({"error": msg, "detail": msg},
+                                                                                     status_code=code)
+    for k, v in (getattr(exc, "headers", None) or {}).items():
+        resp.headers[k] = v
+    return resp
+
+
+VALIDATION_WORDS = (("missing", "обязательное поле не заполнено"), ("int", "нужно целое число"),
+                    ("float", "нужно число"), ("bool", "нужно «да» или «нет»"), ("json", "неверный JSON"),
+                    ("string", "нужна строка"), ("list", "нужен список"), ("dict", "нужен объект"))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    parts = []
+    for e in exc.errors()[:6]:
+        field = ".".join(str(x) for x in e.get("loc", []) if x not in ("body", "query", "path", "header", "cookie")) or "запрос"
+        t = str(e.get("type", ""))
+        what = next((w for k, w in VALIDATION_WORDS if k in t), None) or str(e.get("msg", "неверное значение"))
+        parts.append(f"«{field}» — {what}")
+    msg = "Неверные данные запроса: " + "; ".join(parts)
+    if _wants_html(request):
+        return _error_page(request, 422, msg)
+    return JSONResponse({"error": msg, "detail": jsonable_encoder(exc.errors())}, status_code=422)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    """Необработанная ошибка: номер для поиска в журнале службы, понятная страница или JSON вместо «Internal Server
+    Error»."""
+    eid = secrets.token_hex(4)
+    core.log.error("ошибка %s: %s %s — %s", eid, request.method, request.url.path, exc, exc_info=exc)
+    msg = core.explain_error(exc) if isinstance(exc, (MemoryError, OSError)) else DEFAULT_MSG[500]
+    if _wants_html(request):
+        return _error_page(request, 500, msg, eid)
+    return JSONResponse({"error": f"{msg} Номер ошибки: {eid}", "error_id": eid}, status_code=500)
 SETUP_2FA_OK = ("/account", "/logout", "/static", "/login")      # пока обязательный второй фактор не подключен
 
 
@@ -121,9 +212,10 @@ async def guard(request: Request, call_next):
             return JSONResponse({"error": "подключите двухфакторный вход в профиле"}, status_code=403)
         return RedirectResponse("/account/2fa?required=1", status_code=303)
     if core.PAUSED.is_set() and request.method not in ("GET", "HEAD", "OPTIONS"):
-        return JSONResponse({"error": "идет восстановление из резервной копии — повторите через минуту"}, status_code=503)
+        return _deny(request, 503, "Идет восстановление из резервной копии — повторите через минуту.")
     if request.method not in ("GET", "HEAD", "OPTIONS") and how != "token" and not same_origin(request):
-        return JSONResponse({"error": "запрос с чужой страницы отклонен"}, status_code=403)
+        return _deny(request, 403, "Запрос с чужой страницы отклонен (защита от межсайтовых запросов). Откройте сервис "
+                                   "по его адресу и повторите действие.")
     # номера заданий — только в каноническом виде (FastAPI принял бы и «+1», «1.0», « 1» — обход проверок)
     m = users.JOB_PATH.match(path)
     ids = [m.group(1)] if m else []
@@ -133,7 +225,7 @@ async def guard(request: Request, call_next):
         bad_id = any(not users.ID_RE.fullmatch(v) for _, v in vals)
         ids = [v for k, v in vals if k != "p"]
     if bad_id or any(not users.ID_RE.fullmatch(i) for i in ids):
-        return JSONResponse({"error": "неверный номер задания"}, status_code=404)
+        return _deny(request, 404, "Неверный номер задания.")
     if ids and users.own_only(user) is not None and not all(users.job_visible(user, int(i)) for i in ids):
         if path.startswith("/api/"):
             return JSONResponse({"error": "задание не найдено"}, status_code=404)
@@ -160,7 +252,8 @@ def login_page(request: Request, next: str = "/", error: str = ""):
     st = core.load_settings()
     return tpl.TemplateResponse(request, "login.html", {"next": next, "error": error, "page": "login",
                                                         "ldap": st.get("ldap_enabled"),
-                                                        "oidc": oidc.enabled(st) and (st.get("oidc_button") or "Единый вход")})
+                                                        "oidc": oidc.enabled(st) and (st.get("oidc_button") or "Единый вход"),
+                                                        "cert": bool(st.get("cert_login_enabled"))})
 
 
 _fails = {}                                           # ключ → [попыток, время блокировки]
@@ -337,6 +430,26 @@ async def login_2fa_setup(request: Request, code: str = Form(""), next: str = Fo
     return _start_session(request, u, core.load_settings(), next, "двухфакторный вход подключен", resp=page)
 
 
+@app.get("/login/cert")
+async def login_cert(request: Request, next: str = "/"):
+    """Вход по сертификату (смарт-карте): сертификат проверяет nginx, см. docs/users.md, раздел «Вход по сертификату»."""
+    from . import certlogin
+    st = core.load_settings()
+    if not st.get("cert_login_enabled"):
+        raise HTTPException(404)
+    u, why = await run_in_threadpool(certlogin.identify, request, st)
+    if not u:
+        request.state.user = {"login": "сертификат"}
+        users.audit(request, "login_failed", "сертификат", why)
+        return RedirectResponse("/login?error=cert&next=" + quote(safe_next(next)), status_code=303)
+    if totp.enabled(u["login"]) and not st.get("cert_counts_as_2fa", True):
+        r = RedirectResponse("/login/2fa?next=" + quote(safe_next(next)), status_code=303)
+        r.set_cookie("korrektor_2fa", core.make_token(u["login"], ttl=600, stamp="2fa:" + users.session_stamp(u)),
+                     httponly=True, samesite="lax", max_age=600, secure=_https(request))
+        return r
+    return _start_session(request, u, st, next, "сертификат")
+
+
 @app.get("/login/oidc")
 async def login_oidc(request: Request, next: str = "/"):
     st = core.load_settings()
@@ -464,6 +577,10 @@ async def _create_jobs(request, files, profile="", mode="", note="", author="", 
             except Exception:  # noqa
                 pass
         raise
+    for jid in ids:
+        src = office.find_source(core.job_dir(jid)) or ""
+        core.update_job(jid, status="queued", step="В очереди" if not src or src.endswith(".pdf")
+                        else "В очереди (будет преобразован в PDF)")
     if ids:
         users.audit(request, "upload", ", ".join(map(str, ids)), {"files": len(files), "author": author,
                                                                    "department": department, "type": doc_type})
@@ -493,7 +610,7 @@ def _store_upload(bid, name, data, over, limit, meta=None, office_ok=True, budge
         ids.append(jid)
         with open(os.path.join(d, "source." + ext), "wb") as fh:
             fh.write(blob)
-        core.update_job(jid, status="queued", step="В очереди" if ext == "pdf" else "В очереди (будет преобразован в PDF)")
+        # в очередь задание ставится, когда принят весь запрос (_create_jobs): откат не заденет начатую проверку
 
     def take(fname, blob):
         if blob[:5] == b"%PDF-":
@@ -537,17 +654,138 @@ def batch_page(request: Request, bid: str):
 
 
 @app.get("/job/{jid}", response_class=HTMLResponse)
-def job_page(request: Request, jid: int):
+def job_page(request: Request, jid: int, wf_error: str = ""):
     job = core.get_job(jid)
     if not job:
         raise HTTPException(404)
     state = core.load_state(jid)
-    logtxt = ""
-    lp = os.path.join(core.job_dir(jid), "job.log")
-    if os.path.exists(lp):
-        logtxt = open(lp, encoding="utf-8").read()[-6000:]
+    lg = read_log(jid, -1)                             # хвост журнала; дальше страница дочитывает новые строки сама
     bsize = len(core.list_jobs(batch=job["batch"])) if job.get("batch") else 1
-    return tpl.TemplateResponse(request, "job.html", ctx(request, "jobs", job=job, state=state, log=logtxt, bsize=bsize))
+    wf = None
+    if workflow.enabled() and job["status"] == "done":
+        d = workflow.due(job)
+        wf = {"state": job.get("wf_state") or "", "label": workflow.STATES.get(job.get("wf_state") or "", ""),
+              "actions": [(a, workflow.LABELS[a], workflow.ACTIONS[a][3]) for a in workflow.allowed(request.state.user, job)],
+              "history": workflow.history(jid), "due": d.strftime("%d.%m.%Y") if d else "", "overdue": workflow.overdue(job),
+              "blockers": workflow.blockers(job), "error": wf_error[:300], "names": workflow.STATES,
+              "alabels": dict(workflow.LABELS, reset="перепроверка — согласование заново")}
+    ai_gap = ""
+    if state and state.get("ai"):
+        from .pipeline import llm
+        ai_gap = llm.not_checked(state["ai"])
+    return tpl.TemplateResponse(request, "job.html", ctx(request, "jobs", job=job, state=state, log=lg["text"],
+                                                         log_offset=lg["offset"], log_cut=lg["truncated"], bsize=bsize,
+                                                         wf=wf, ai_gap=ai_gap, can_stop=_may_manage(request, job)))
+
+
+LOG_CHUNK = 256 * 1024
+
+
+def read_log(jid, offset=0, limit=LOG_CHUNK):
+    """Кусок журнала задания с позиции offset (байты) до последнего целого перевода строки. offset = -1 — хвост
+    журнала (последние limit байт). → {"text", "offset", "size", "reset", "truncated"}."""
+    p = os.path.join(core.job_dir(jid), "job.log")
+    try:
+        size = os.path.getsize(p)
+    except OSError:
+        return {"text": "", "offset": 0, "size": 0, "reset": offset > 0, "truncated": False}
+    reset = truncated = False
+    if offset == -1:
+        offset = max(0, size - limit)
+        truncated = offset > 0
+    elif offset < 0 or offset > size:
+        offset, reset = 0, True                       # журнал начат заново (задание проверяется повторно)
+    with open(p, "rb") as fh:
+        fh.seek(offset)
+        data = fh.read(limit)
+    if truncated:                                     # начали с середины строки — до ближайшего перевода строки
+        nl = data.find(b"\n")
+        data, offset = (data[nl + 1:], offset + nl + 1) if nl >= 0 else (b"", offset)
+    if not data.endswith(b"\n"):
+        nl = data.rfind(b"\n")
+        if nl >= 0:
+            data = data[:nl + 1]
+        elif len(data) < limit:
+            data = b""                                # строка еще пишется — дочитаем в следующий раз
+    return {"text": data.decode("utf-8", "replace"), "offset": offset + len(data), "size": size, "reset": reset,
+            "truncated": truncated}
+
+
+def _may_manage(request, job):
+    """Останавливать, перезапускать и удалять задание может корректор, администратор или тот, кто его загрузил."""
+    user = getattr(request.state, "user", None) or {}
+    return users.can(user, "review") or (job.get("owner") and job.get("owner") == user.get("login"))
+
+
+@app.get("/api/jobs/{jid}/log")
+def api_job_log(jid: int, offset: int = 0):
+    """Журнал обработки в реальном времени: новые строки с позиции offset, состояние и признаки работы задания."""
+    job = core.get_job(jid)
+    if not job:
+        raise HTTPException(404, "Задание не найдено")
+    lg = read_log(jid, offset)
+    beat = float(job.get("beat") or 0)
+    lg.update(status=job["status"], progress=job["progress"], step=job["step"], error=job.get("error") or "",
+              idle=round(time.time() - beat, 1) if beat and job["status"] == "running" else None,
+              stopping=jid in core.CANCEL)
+    return lg
+
+
+@app.get("/job/{jid}/log.txt")
+@app.get("/api/jobs/{jid}/log.txt")
+def job_log_file(jid: int):
+    job = core.get_job(jid)
+    p = os.path.join(core.job_dir(jid), "job.log")
+    if not job or not os.path.exists(p):
+        raise HTTPException(404, "Журнала задания нет")
+    return FileResponse(p, media_type="text/plain; charset=utf-8", filename=f"journal_{jid}.txt")
+
+
+def _cancel(request, jid):
+    job = core.get_job(jid)
+    if not job:
+        raise HTTPException(404, "Задание не найдено")
+    if not _may_manage(request, job):
+        raise HTTPException(403, "Остановить задание может корректор, администратор или тот, кто его загрузил")
+    res = core.cancel_job(jid)
+    if res:
+        users.audit(request, "job_cancel", jid, job["name"] + (" (из очереди)" if res == "stopped" else ""))
+    return res
+
+
+@app.post("/job/{jid}/cancel")
+def job_cancel(request: Request, jid: int):
+    _cancel(request, jid)
+    return RedirectResponse(f"/job/{jid}", status_code=303)
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def api_job_cancel(request: Request, jid: int):
+    """Остановка задания: {"ok": true, "result": "stopped" (снято из очереди) | "stopping" (останавливается)}."""
+    res = _cancel(request, jid)
+    if not res:
+        return JSONResponse({"ok": False, "error": "задание уже завершено"}, status_code=409)
+    return {"ok": True, "result": res}
+
+
+@app.post("/job/{jid}/workflow")
+async def job_workflow(request: Request, jid: int, action: str = Form(...), comment: str = Form("")):
+    try:
+        await run_in_threadpool(workflow.act, request, jid, action, comment)
+    except ValueError as e:
+        return RedirectResponse(f"/job/{jid}?wf_error={quote(str(e))}#workflow", status_code=303)
+    return RedirectResponse(f"/job/{jid}#workflow", status_code=303)
+
+
+@app.post("/api/jobs/{jid}/workflow")
+async def api_job_workflow(request: Request, jid: int):
+    """Согласование через REST API: {"action": "take|return|approve|sign|fixed|reopen", "comment": "…"}."""
+    body = await json_body(request, {})
+    try:
+        state = await run_in_threadpool(workflow.act, request, jid, str(body.get("action", "")), str(body.get("comment", "")))
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
+    return {"ok": True, "state": state, "label": workflow.STATES[state]}
 
 
 @app.get("/job/{jid}/file/{kind}")
@@ -572,6 +810,8 @@ def job_file(jid: int, kind: str):
     if not fn:
         raise HTTPException(404, "Этот формат не создавался — включите его в настройках «Отчет» → «Форматы отчета»")
     path = os.path.join(core.job_dir(jid), fn)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Файл отчета не найден на сервере — нажмите «Пересобрать отчет» или проверьте документ заново")
     return FileResponse(path, filename=os.path.basename(fn))
 
 
@@ -596,6 +836,32 @@ def job_page_img(jid: int, n: int):
         except Exception:  # noqa
             raise HTTPException(404)
     return FileResponse(p, media_type="image/png")
+
+
+@app.get("/job/{jid}/crop/{n}.png")
+def job_crop(jid: int, n: int, r: str = ""):
+    """Фрагмент страницы (миниатюра картинки из блока «Изображения»)."""
+    import pymupdf
+    import math
+    try:
+        x0, y0, x1, y1 = (float(v) for v in r.split(",")[:4])
+    except ValueError:
+        raise HTTPException(400)
+    if not all(math.isfinite(v) and abs(v) < 1e6 for v in (x0, y0, x1, y1)):
+        raise HTTPException(400)
+    src = os.path.join(core.job_dir(jid), "source.pdf")
+    if not os.path.exists(src):
+        raise HTTPException(404)
+    with pymupdf.open(src) as d:
+        if not 1 <= n <= d.page_count:
+            raise HTTPException(404)
+        page = d[n - 1]
+        clip = pymupdf.Rect(x0, y0, x1, y1) & page.rect
+        if clip.is_empty or clip.width < 5 or clip.height < 5:
+            raise HTTPException(400)
+        zoom = min(2.0, 160.0 / max(clip.width, clip.height))
+        png = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False).tobytes("png")
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/job/{jid}/checks.xlsx")
@@ -629,12 +895,17 @@ def job_checks_xlsx(jid: int):
         ws2.append(["Кегль, пт", f["size"], f["share"]])
     for f in prof.get("colors", []):
         ws2.append(["Цвет текста", f["color"], f["share"]])
+    ws4 = wb.create_sheet("Изображения")
+    ws4.append(["№", "Страница", "Подпись рядом", "Вид"])
+    for k, dset in enumerate((state.get("images") or {}).get("duplicates") or [], 1):
+        for pl in dset["places"]:
+            ws4.append([k, pl["page"], _safe(pl["label"]), "одинаковые" if dset["kind"] == "same" else "похожие"])
     ws3 = wb.create_sheet("Справочник продукции")
     ws3.append(["Стр.", "Замечание", "Подробности", "Артикул", "Как в справочнике", "Строка документа"])
     for i in (state.get("products") or {}).get("issues") or []:
         ws3.append([", ".join(map(str, i.get("pages") or [i["page"]])), _safe(i["title"]), _safe(i["detail"]), _safe(i["article"]), _safe(i.get("suggest", "")),
                     _safe(i.get("text", ""))])
-    for w in (ws, ws2, ws3):
+    for w in (ws, ws2, ws3, ws4):
         for c in w[1]:
             c.font = Font(bold=True)
         for col, width in zip("ABCDEF", (40, 50, 20, 22, 22, 60)):
@@ -644,6 +915,29 @@ def job_checks_xlsx(jid: int):
     wb.save(buf)
     name = f"Проверки_оформления_{jid}.xlsx"
     return Response(buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
+def _indesign(jid, accepted_only=False):
+    from .pipeline import indesign
+    state, job = core.load_state(jid), core.get_job(jid)
+    if not state or not job:
+        raise HTTPException(404, "Отчет еще не готов")
+    st = core.load_settings()
+    js, n = indesign.build(run.report_findings(state, st), job["name"], jid,
+                           (st.get("service_url") or "").rstrip("/") + f"/job/{jid}" if st.get("service_url") else "",
+                           accepted_only)
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", f"{job['name']}_правки_InDesign.jsx")[-150:]
+    return js, name
+
+
+@app.get("/job/{jid}/indesign.jsx")
+@app.get("/api/jobs/{jid}/indesign.jsx")
+def job_indesign(request: Request, jid: int, accepted: int = 0):
+    """Скрипт правок для Adobe InDesign: вносит исправления в макет, отмечает места для проверки."""
+    js, name = _indesign(jid, bool(accepted))
+    users.audit(request, "download", jid, "скрипт правок InDesign")
+    return Response(js.encode("ascii"), media_type="application/javascript",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
@@ -661,6 +955,11 @@ def job_zip(jid: int):
             p = os.path.join(core.job_dir(jid), fn)
             if os.path.exists(p):
                 z.write(p, os.path.basename(fn))
+        try:
+            js, name = _indesign(jid)
+            z.writestr(name, js)
+        except Exception:  # noqa — скрипт InDesign в архиве необязателен
+            pass
     return Response(buf.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f"attachment; filename=report_{jid}.zip"})
 
@@ -670,16 +969,19 @@ def _idle_job(jid, request=None):
     if not job:
         raise HTTPException(404)
     user = getattr(request.state, "user", None) if request else None
-    if request and not users.can(user, "review") and job.get("owner") != (user or {}).get("login"):
+    if request and not _may_manage(request, job):
         raise HTTPException(403, "Удалять и перезапускать чужие задания может корректор или администратор")
     if job["status"] in ("running", "uploading"):
-        raise HTTPException(409, "Задание сейчас выполняется — дождитесь окончания проверки")
+        raise HTTPException(409, "Задание сейчас выполняется — дождитесь окончания проверки или остановите его "
+                                 "кнопкой «Остановить»")
     return job
 
 
 @app.post("/job/{jid}/delete")
 def job_delete(request: Request, jid: int):
     job = _idle_job(jid, request)
+    if not core.claim_idle(jid, "deleting"):
+        raise HTTPException(409, "Задание сейчас выполняется — дождитесь окончания проверки")
     core.delete_job(jid)
     analytics.decisions_changed()
     users.audit(request, "job_delete", jid, job["name"])
@@ -689,16 +991,21 @@ def job_delete(request: Request, jid: int):
 @app.post("/job/{jid}/restart")
 def job_restart(request: Request, jid: int):
     job = _idle_job(jid, request)
-    users.audit(request, "job_restart", jid, job["name"])
     d = core.job_dir(jid)
     if not os.path.exists(os.path.join(d, "source.pdf")) and not office.find_source(d):
         raise HTTPException(404, "Исходный файл задания не найден")
+    if not core.claim_idle(jid, "restarting"):
+        raise HTTPException(409, "Задание сейчас выполняется — дождитесь окончания проверки")
+    users.audit(request, "job_restart", jid, job["name"])
     with core.state_lock(jid):
-        for fn in os.listdir(d):
-            p = os.path.join(d, fn)
-            if not fn.startswith("source.") and os.path.isfile(p):
-                os.remove(p)
-        core.update_job(jid, status="queued", progress=0, step="В очереди", error="")
+        try:
+            for fn in os.listdir(d):
+                p = os.path.join(d, fn)
+                if not fn.startswith("source.") and os.path.isfile(p):
+                    os.remove(p)
+        finally:
+            core.update_job(jid, status="queued", progress=0, step="В очереди", error="")
+    workflow.reset(request, jid, "документ проверен заново")
     analytics.decisions_changed()                      # решения этого задания больше не участвуют в обучении
     core.kick()
     return RedirectResponse(f"/job/{jid}", status_code=303)
@@ -719,6 +1026,8 @@ def api_jobs(request: Request):
 async def api_create(request: Request, file: list[UploadFile] = File(...), profile: str = Form(""), mode: str = Form(""),
                      author: str = Form(""), department: str = Form(""), doc_type: str = Form("")):
     ids = await _create_jobs(request, file, profile, mode, "", author, department, doc_type)
+    if not ids:
+        raise HTTPException(400, "Нет файлов для проверки: принимаются PDF, DOCX, DOC, ODT, RTF и ZIP с ними")
     return {"jobs": ids}
 
 
@@ -758,9 +1067,13 @@ def rebuild_job(jid, state=None, summary=None):
     state = state or core.load_state(jid)
     if not state or not job:
         raise HTTPException(404)
-    if summary:
-        state["meta"]["summary"] = summary
-        state["summary_edited"] = True
+    if summary is not None:
+        text = run.clean(yo(summary)).strip()
+        if not text:                                   # пустой итог — снова собирается автоматически
+            state["summary_edited"] = False
+        elif text != (state["meta"].get("summary") or "").strip():
+            state["meta"]["summary"] = text            # итог изменен вручную — больше не пересобирается
+            state["summary_edited"] = True
     st = core.load_settings()
     try:
         st.update(json.loads(job.get("settings") or "{}"))
@@ -770,7 +1083,7 @@ def rebuild_job(jid, state=None, summary=None):
     core.save_state(jid, state)
     v = state["verify"]
     core.update_job(jid, findings=v.get("count", 0), verify_ok=1 if v.get("ok") else 0,
-                    verify_score=f"{v.get('passed', 0)}/{v.get('total', 0)}")
+                    verify_score=f"{v.get('passed', 0)}/{v.get('total', 0)}", error=v.get("error") or "")
     return v
 
 
@@ -784,14 +1097,21 @@ def _edit_finding(jid, fid, body):
                 if body.get("status") in ("new", "accepted", "rejected"):
                     f["status"] = body["status"]
                     f.pop("auto", None)                # решение корректора — настоящее, учитывается в обучении
-                for k in ("fix", "good", "note", "type"):
-                    if isinstance(body.get(k), str):
-                        if k == "type" and body[k] not in TYPES:
-                            continue
-                        if body[k] != f.get(k) and k in ("fix", "good"):
-                            f.setdefault("orig_" + k, f.get(k))
-                            f["edited"] = True
-                        f[k] = body[k][:2000]
+                new = {k: run.clean(yo(body[k])).strip()[:2000] for k in ("fix", "good", "note")
+                       if isinstance(body.get(k), str)}          # «ё» → «е» и без управляющих знаков (проверка 25)
+                if "note" in new and not new["note"]:
+                    raise HTTPException(400, "Пояснение не может быть пустым")
+                typ = body.get("type") if body.get("type") in TYPES else f.get("type")
+                fix, good = new.get("fix", f.get("fix") or ""), new.get("good", f.get("good") or "")
+                if typ != AUTHOR and good not in ("", "—") and good not in fix:
+                    raise HTTPException(400, "«Как правильно» (выделенный фрагмент) должно входить в исправленную цитату")
+                for k, v in new.items():
+                    if v != f.get(k) and k in ("fix", "good"):
+                        f.setdefault("orig_" + k, f.get(k))
+                        f["edited"] = True
+                    f[k] = v
+                if body.get("type") in TYPES:
+                    f["type"] = body["type"]
                 core.save_state(jid, state)
                 return {"ok": True, "finding": f}
     raise HTTPException(404)
@@ -967,10 +1287,23 @@ async def api_bulk(request: Request):
     user = getattr(request.state, "user", None)
     if users.own_only(user) is not None:                # разделение по отделам: только видимые задания
         items = {j: v for j, v in items.items() if users.job_visible(user, j)}
-    done = await run_in_threadpool(_bulk, items, status, body.get("rebuild", True) is not False)
+    done = await run_in_threadpool(_bulk, items, status, False)
     analytics.decisions_changed()
     users.audit(request, "bulk", ", ".join(map(str, done)), {"status": status, "changed": sum(done.values())})
-    return {"ok": True, "changed": done}
+    if done and body.get("rebuild", True) is not False:
+        # отчеты пересобираются в фоне: сотни документов не держат запрос дольше таймаута nginx
+        import threading
+        threading.Thread(target=_rebuild_many, args=(list(done),), daemon=True).start()
+    return {"ok": True, "changed": done, "rebuilding": bool(done)}
+
+
+def _rebuild_many(jids):
+    for jid in jids:
+        try:
+            with core.state_lock(jid):
+                rebuild_job(jid)
+        except Exception:  # noqa
+            core.log.exception("фоновая пересборка отчета %s", jid)
 
 
 def _bulk(items, status, rebuild):
@@ -1036,27 +1369,40 @@ def run_prompt_info():
             "size": os.path.getsize(active), "path": active}
 
 
+def texthash(v):
+    import hashlib
+    return hashlib.sha1(str(v or "").replace("\r\n", "\n").strip().encode()).hexdigest()[:16]
+
+
+tpl.env.globals["texthash"] = texthash
+
+
 @app.post("/settings")
 async def settings_save(request: Request):
     form = await request.form()
-    st = core.load_settings()
-    old = dict(st)
-    for s in S:
-        k = s["key"]
-        if s["type"] == "bool":
-            st[k] = k in form
-        elif s["type"] == "multi":
-            st[k] = form.getlist(k)
-        elif s["type"] == "secret":
-            v = form.get(k, "")
-            if v and set(v) != {"•"}:
-                st[k] = v.strip()
-            elif form.get(k + "__clear"):
-                st[k] = ""
-        elif k in form:
-            st[k] = core.coerce(k, form.get(k))
+    old = {}
+
+    def upd(st):
+        old.update(st)
+        for s in S:
+            k = s["key"]
+            if s["type"] == "bool":
+                st[k] = k in form
+            elif s["type"] == "multi":
+                st[k] = core.coerce(k, form.getlist(k))
+            elif s["type"] == "secret":
+                v = form.get(k, "")
+                if v and set(v) != {"•"}:
+                    st[k] = v.strip()
+                elif form.get(k + "__clear"):
+                    st[k] = ""
+            elif s["type"] == "text" and k in form and form.get("h__" + k) == texthash(form.get(k)):
+                continue                               # поле не меняли: сохраняем текущее (белый список мог пополниться)
+            elif k in form:
+                st[k] = core.coerce(k, form.get(k))
+    st = core.update_settings(upd)
+    core.apply_log_level(st)
     changed = [k for k in SCHEMA if old.get(k) != st.get(k)]
-    core.save_settings(st)
     users.audit(request, "settings", ", ".join(changed)[:300],
                 {k: ("***" if SCHEMA[k]["type"] == "secret" else st.get(k)) for k in changed[:30]})
     return RedirectResponse("/settings?saved=1", status_code=303)
@@ -1080,23 +1426,25 @@ async def settings_import(request: Request, file: UploadFile = File(...)):
         assert isinstance(data, dict)
     except Exception:  # noqa
         raise HTTPException(400, "Файл не является выгрузкой настроек Корректора (ожидается JSON-объект)")
-    st = core.load_settings()
-    for k, v in data.items():
-        if k in SCHEMA and not (SCHEMA[k]["type"] == "secret" and not v):
-            st[k] = v if SCHEMA[k]["type"] in ("multi",) else core.coerce(k, v)
-    core.save_settings(st)
+    def upd(st):
+        for k, v in data.items():
+            if k in SCHEMA and not (SCHEMA[k]["type"] == "secret" and not v):
+                st[k] = core.coerce(k, v)              # значения проверяются по схеме (в т. ч. списки)
+    core.apply_log_level(core.update_settings(upd))
     users.audit(request, "settings_import", file.filename or "")
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
 @app.post("/settings/reset")
 def settings_reset(request: Request):
-    st = core.load_settings()
     users.audit(request, "settings_reset")
-    keep = {k: st.get(k) for k in SCHEMA if SCHEMA[k]["type"] == "secret"}
-    new = dict(DEFAULTS)
-    new.update(keep)
-    core.save_settings(new)
+
+    def upd(st):
+        keep = {k: st.get(k) for k in SCHEMA if SCHEMA[k]["type"] == "secret"}
+        st.clear()
+        st.update(DEFAULTS)
+        st.update(keep)
+    core.apply_log_level(core.update_settings(upd))
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
@@ -1125,14 +1473,13 @@ def prompt_download():
 
 
 @app.post("/settings/test-ai")
-def test_ai():
+def test_ai(full: int = 0):
+    """Проверка связи с моделью; full=1 — с настоящим мастер-промптом (время чтения промпта, контекст, формат)."""
     from .pipeline import llm
     st = core.load_settings()
-    try:
-        ans = llm.call(st, "Ты проверяешь связь. Ответь строго JSON {\"findings\": []}.", "Проверка связи", print)
-        return {"ok": True, "answer": ans[:300]}
-    except Exception as e:  # noqa
-        return {"ok": False, "error": str(e)[:500]}
+    ok, lines = llm.diagnose(st, bool(full))
+    text = "\n".join(lines)[:3000]
+    return {"ok": True, "answer": text} if ok else {"ok": False, "error": text}
 
 
 @app.post("/settings/test-lt")
@@ -1151,9 +1498,7 @@ def test_lt():
 @app.post("/settings/token")
 def new_token(request: Request):
     users.audit(request, "token")
-    st = core.load_settings()
-    st["api_token"] = secrets.token_hex(24)
-    core.save_settings(st)
+    st = core.update_settings(lambda s: s.__setitem__("api_token", secrets.token_hex(24)))
     return {"token": st["api_token"]}
 
 

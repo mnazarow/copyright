@@ -19,20 +19,55 @@ from . import core
 ENV_FILE = "/etc/korrektor/korrektor.env"
 STATUS = os.path.join(core.DATA, ".backup_status.json")
 _running = threading.Lock()
-NAME_RE = re.compile(r"^korrektor-(?:auto|upload)-\d{8}-\d{6}(?:-\d{1,3})?\.tgz$")
-ANY_NAME_RE = re.compile(r"^korrektor-[\w-]{1,60}\.tgz$")       # копии из командной строки (korrektor backup) тоже
+NAME_RE = re.compile(r"^korrektor-(?:auto|upload)-\d{8}-\d{6}(?:-\d{1,3})?\.tgz(?:\.enc)?$")
+ANY_NAME_RE = re.compile(r"^korrektor-[\w-]{1,60}\.tgz(?:\.enc)?$")   # копии из командной строки (korrektor backup) тоже
 RESTORE_ITEMS = ("jobs", "batches", "settings.json", "custom_prompt.md", "products.json", ".remind.json")
 
 
-def _unique(d, kind):
+def _unique(d, kind, ext=".tgz"):
     """Имя новой копии; две копии в одну секунду (страховочная перед восстановлением) не затирают друг друга."""
     base = f"korrektor-{kind}-{dt.datetime.now():%Y%m%d-%H%M%S}"
-    name = base + ".tgz"
+    name = base + ext
     n = 1
     while os.path.exists(os.path.join(d, name)) or os.path.exists(os.path.join(d, name + ".part")):
-        name = f"{base}-{n}.tgz"
+        name = f"{base}-{n}{ext}"
         n += 1
     return name, os.path.join(d, name)
+
+
+def password(st=None):
+    """Пароль шифрования копий: из настроек или из переменной KORREKTOR_BACKUP_PASSWORD (командная строка)."""
+    return os.environ.get("KORREKTOR_BACKUP_PASSWORD") or (st or core.load_settings()).get("backup_password") or ""
+
+
+class _Plain:
+    """Путь к расшифрованной копии на время работы (для незашифрованной — сам файл); временный файл удаляется."""
+
+    def __init__(self, path, st=None):
+        self.path, self.st, self.tmp = path, st, None
+
+    def __enter__(self):
+        from . import crypt
+        if not crypt.is_encrypted(self.path):
+            return self.path
+        old = os.umask(0o077)
+        try:
+            # расшифрованная копия — на локальный диск сервера (папка данных; «.restore-» не попадает в копии),
+            # а не рядом с зашифрованной: сетевой диск с копиями не должен видеть открытые данные
+            fd, self.tmp = tempfile.mkstemp(prefix=".restore-decrypt-", suffix=".tgz", dir=core.DATA)
+            os.close(fd)
+            crypt.decrypt_file(self.path, self.tmp, password(self.st))
+        except Exception:
+            if self.tmp and os.path.exists(self.tmp):
+                os.remove(self.tmp)
+            raise
+        finally:
+            os.umask(old)
+        return self.tmp
+
+    def __exit__(self, *a):
+        if self.tmp and os.path.exists(self.tmp):
+            os.remove(self.tmp)
 
 
 def target_dir(st):
@@ -60,7 +95,8 @@ def run(st=None, reason="расписание", rotate=True):
     try:
         d = target_dir(st)
         os.makedirs(d, exist_ok=True)
-        name, path = _unique(d, "auto")
+        pw = password(st)
+        name, path = _unique(d, "auto", ".tgz.enc" if pw else ".tgz")
         tmp = path + ".part"
         pages = bool(st.get("backup_include_pages"))
         data_real = os.path.realpath(core.DATA)
@@ -91,12 +127,24 @@ def run(st=None, reason="расписание", rotate=True):
                 tar.add(core.DATA, arcname=arc, filter=flt)
                 tar.add(dbcopy, arcname=f"{arc}/korrektor.db")
                 if os.access(ENV_FILE, os.R_OK):
-                    tar.add(ENV_FILE, arcname="etc/korrektor.env")
+                    _add_env(tar, encrypted=bool(pw))
         finally:
             os.umask(old)
             if os.path.exists(dbcopy):
                 os.remove(dbcopy)
-        os.replace(tmp, path)
+        if pw:
+            from . import crypt
+            old = os.umask(0o077)
+            try:
+                crypt.encrypt_file(tmp, path + ".encpart", pw)   # AES-256-GCM, ключ из пароля (scrypt)
+                os.replace(path + ".encpart", path)
+            finally:
+                os.umask(old)
+                if os.path.exists(path + ".encpart"):
+                    os.remove(path + ".encpart")
+            os.remove(tmp)
+        else:
+            os.replace(tmp, path)
         size = os.path.getsize(path)
         digest = sha256(path)
         with open(path + ".sha256", "w") as fh:
@@ -126,6 +174,23 @@ def run(st=None, reason="расписание", rotate=True):
         except OSError:
             pass
         _running.release()
+
+
+SECRET_ENV = ("KORREKTOR_SECRET", "KORREKTOR_ADMIN_PASSWORD")
+
+
+def _add_env(tar, encrypted):
+    """korrektor.env в копию: в зашифрованную — целиком; в незашифрованную — без ключа подписи сеансов и пароля
+    администратора (при восстановлении с --with-env они берутся из текущего файла)."""
+    import io
+    text = open(ENV_FILE, encoding="utf-8").read()
+    if not encrypted:
+        text = "\n".join(f"# {ln.split('=', 1)[0]}=… (не хранится в незашифрованной копии)"
+                          if ln.split("=", 1)[0].strip() in SECRET_ENV else ln for ln in text.splitlines()) + "\n"
+    data = text.encode("utf-8")
+    ti = tarfile.TarInfo("etc/korrektor.env")
+    ti.size, ti.mode, ti.mtime = len(data), 0o600, int(time.time())
+    tar.addfile(ti, io.BytesIO(data))
 
 
 def listing(st=None):
@@ -179,10 +244,12 @@ def _in_scope(m, root):
     return m.isfile() or m.isdir()
 
 
-def verify(path):
-    """Проверка целостности копии без восстановления. → словарь: ok, errors, сведения."""
+def verify(path, st=None):
+    """Проверка целостности копии без восстановления (зашифрованная — расшифровывается во временный файл).
+    → словарь: ok, errors, сведения."""
+    from . import crypt
     res = {"ok": False, "errors": [], "file": os.path.basename(path), "size": os.path.getsize(path),
-           "checked": dt.datetime.now().isoformat(timespec="seconds")}
+           "checked": dt.datetime.now().isoformat(timespec="seconds"), "encrypted": crypt.is_encrypted(path)}
     side = path + ".sha256"
     try:
         if os.path.exists(side):
@@ -190,9 +257,24 @@ def verify(path):
             res["sha256"] = "совпадает" if sha256(path) == want else "НЕ совпадает"
             if res["sha256"] != "совпадает":
                 res["errors"].append("контрольная сумма не совпадает — файл поврежден или изменен")
+        if not res["errors"]:
+            with _Plain(path, st) as plain:
+                _verify_tar(plain, res)
+    except crypt.CryptoError as e:
+        res["errors"].append(str(e))
     except OSError as e:
         res["errors"].append(f"файл копии не читается: {e}")
-        return res
+    res["ok"] = not res["errors"]
+    try:
+        checks = status().get("checks", {})
+        checks[res["file"]] = {"ok": res["ok"], "time": res["checked"], "errors": res["errors"][:3]}
+        _save_status(checks=dict(list(checks.items())[-50:]))
+    except Exception:  # noqa
+        pass
+    return res
+
+
+def _verify_tar(path, res):
     try:
         with tarfile.open(path, "r:gz") as tar:
             members = tar.getmembers()             # читает весь архив: проверяет сжатие и CRC
@@ -200,7 +282,7 @@ def verify(path):
             root = _root(names)
             if not root:
                 res["errors"].append("в архиве нет базы korrektor.db — это не резервная копия Корректора")
-                return res
+                return
             res["root"] = root
             bad = [m.name for m in members if _unsafe(m)]
             if bad:
@@ -236,15 +318,6 @@ def verify(path):
                     res["errors"].append("файл настроек поврежден")
     except (tarfile.TarError, OSError, EOFError, sqlite3.Error) as e:
         res["errors"].append(f"архив не читается: {e}")
-    res["ok"] = not res["errors"]
-    try:
-        st = status()
-        checks = st.get("checks", {})
-        checks[res["file"]] = {"ok": res["ok"], "time": res["checked"], "errors": res["errors"][:3]}
-        _save_status(checks=dict(list(checks.items())[-50:]))
-    except Exception:  # noqa
-        pass
-    return res
 
 
 def _wait_idle(timeout):
@@ -279,10 +352,20 @@ def restore(path, live=True, wait=120, safety_copy=True):
     Перед восстановлением — проверка целостности и (live) страховочная копия текущего состояния.
     При любой ошибке на середине все возвращается как было. Ключ подписи сеансов (.secret),
     второй фактор встроенного администратора и состояние копий не трогаются. → словарь с итогом."""
+    from . import crypt
     if not _restoring.acquire(blocking=False):
         raise RuntimeError("восстановление уже выполняется")
     try:
-        return _restore(path, live, wait, safety_copy)
+        side = path + ".sha256"
+        if os.path.exists(side) and sha256(path) != (open(side).read().split() or [""])[0]:
+            raise ValueError("копия не прошла проверку: контрольная сумма не совпадает — файл поврежден или изменен")
+        try:
+            with _Plain(path) as plain:             # зашифрованная копия расшифровывается один раз
+                res = _restore(plain, live, wait, safety_copy)
+        except crypt.CryptoError as e:
+            raise ValueError(f"копия не расшифрована: {e}")
+        res["file"] = os.path.basename(path)
+        return res
     finally:
         _restoring.release()
 
@@ -370,7 +453,9 @@ def save_upload(src):
     """Загруженный администратором архив кладется в папку копий под именем korrektor-upload-…tgz."""
     d = target_dir(core.load_settings())
     os.makedirs(d, exist_ok=True)
-    name, path = _unique(d, "upload")
+    head = src.read(len(b"KORREKTOR-ENC1\n"))
+    src.seek(0)
+    name, path = _unique(d, "upload", ".tgz.enc" if head == b"KORREKTOR-ENC1\n" else ".tgz")
     old = os.umask(0o077)
     try:
         total = 0
@@ -398,8 +483,16 @@ def _cli():
     if len(sys.argv) == 2 and sys.argv[1] == "backup":
         print("Резервная копия:", run(reason="командная строка"))
         return
+    if len(sys.argv) == 4 and sys.argv[1] == "decrypt":           # для korrektor restore --with-env
+        from . import crypt
+        try:
+            crypt.decrypt_file(sys.argv[2], sys.argv[3], password())
+        except crypt.CryptoError as e:
+            print("Ошибка:", e)
+            sys.exit(1)
+        return
     if len(sys.argv) < 3 or sys.argv[1] not in ("verify", "restore"):
-        print("использование: python -m app.backup backup | verify ФАЙЛ | restore ФАЙЛ")
+        print("использование: python -m app.backup backup | verify ФАЙЛ | restore ФАЙЛ | decrypt ФАЙЛ.enc ФАЙЛ.tgz")
         sys.exit(2)
     path = os.path.abspath(sys.argv[2])
     if sys.argv[1] == "verify":
@@ -416,9 +509,6 @@ def _cli():
           + (f"; страховочная копия текущих данных: {r['safety']}" if r["safety"] else ""))
 
 
-if __name__ == "__main__":
-    _cli()
-
 
 def loop():
     while True:
@@ -434,3 +524,7 @@ def loop():
         except Exception:  # noqa
             core.log.exception("расписание резервного копирования")
         time.sleep(300)
+
+
+if __name__ == "__main__":
+    _cli()

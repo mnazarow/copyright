@@ -14,6 +14,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
 from . import core
+from .pipeline.common import plural
 
 EVENT_TITLES = {"done": "Отчет готов", "failed": "Проверка не выполнена", "goal": "Цель качества нарушена",
                 "digest": "Еженедельная сводка", "test": "Проверка уведомлений", "remind": "Напоминание",
@@ -165,7 +166,7 @@ def job_event(jid):
                    "reports": {k: link(st, f"/api/jobs/{jid}/report?format={k}") for k in files}}
         if job["status"] == "done" and "done" in events:
             lines = [f"Документ: {job['name']}", f"Страниц: {pages}, замечаний: {job.get('findings')}"
-                     + (f" ({density} на 10 страниц)" if density is not None else ""),
+                     + (f" ({str(density).replace('.', ',')} на 10 страниц)" if density is not None else ""),
                      f"Машинная проверка оформления: {job.get('verify_score')}"
                      + (" — отчет принят" if job.get("verify_ok") else " — отчет НЕ принят, нужна правка замечаний")]
             if over and st.get("goal_alert", True):
@@ -187,7 +188,8 @@ def job_event(jid):
             dispatch(st, "failed", f"Корректор: проверка не выполнена — {job['name']}", text,
                      _html(text, url, "Открыть задание"), payload, job.get("owner"))
         if job["status"] == "done" and over and "goal" in events and st.get("goal_alert", True):
-            text = (f"Документ «{job['name']}»: {density} замечаний на 10 страниц при цели {goal}.\n"
+            text = (f"Документ «{job['name']}»: {str(density).replace('.', ',')} замечаний на 10 страниц при цели "
+                    f"{str(goal).replace('.', ',')}.\n"
                     f"Автор: {job.get('author') or '—'}, отдел: {job.get('department') or '—'}.\n{url}")
             dispatch(st, "goal", f"Корректор: превышена цель качества — {job['name']}", text,
                      _html(text, url, "Открыть отчет"), dict(payload, event="goal"))
@@ -326,7 +328,8 @@ def send_reminders(st, force=False, only=None):
     if st.get("email_enabled"):
         for addr, lst in boxes.items():
             text = ("Есть замечания без отметки ✓ или ✕:\n" + "\n".join(
-                f"• {p['name']} — {p['pending']} замечаний, отчет готов {p['days']} дн. назад: {p['url']}" for p in lst)
+                f"• {p['name']} — {p['pending']} {plural(p['pending'], 'замечание', 'замечания', 'замечаний')}, "
+                f"отчет готов {p['days']} дн. назад: {p['url']}" for p in lst)
                 + "\nОтметьте замечания или примите правки — отчет будет пересобран.")
             try:
                 r = send_email(st, f"Корректор: неразобранные замечания ({len(lst)})", text, _html(text), [addr])

@@ -9,6 +9,10 @@ AUTHOR = "Требует проверки автором"
 TYPES = ["Орфография", "Пунктуация", "Грамматика", "Стилистика", "Типографика",
          "Единообразие", "Логика", AUTHOR]
 
+class Cancelled(Exception):
+    """Задание остановлено пользователем (кнопка «Остановить»)."""
+
+
 LAT2CYR = dict(zip("ABCEHKMOPTXYaceopxy", "АВСЕНКМОРТХУасеорху"))
 CYR2LAT = {v: k for k, v in LAT2CYR.items()}
 
@@ -18,8 +22,30 @@ def norm(s):
     return WS.sub("", s or "").translate(YO)
 
 
+def plural(n, one, few, many):
+    """Русское окончание по числу: 1 замечание, 2 замечания, 5 замечаний."""
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def yo(s):
     return (s or "").translate(YO)
+
+
+def dur(sec):
+    """Длительность для журнала: «0,4 с», «12 с», «3 мин 05 с», «1 ч 02 мин»."""
+    sec = max(0.0, float(sec))
+    if sec < 10:
+        return f"{sec:.1f}".replace(".", ",") + " с"
+    if sec < 60:
+        return f"{int(sec)} с"
+    if sec < 3600:
+        return f"{int(sec // 60)} мин {int(sec % 60):02d} с"
+    return f"{int(sec // 3600)} ч {int(sec % 3600 // 60):02d} мин"
 
 
 def kind(ch):

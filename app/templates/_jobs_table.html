@@ -8,7 +8,8 @@
   <td class="muted small">{{ j.author or '—' }}{% if j.department %}<br>{{ j.department }}{% endif %}{% if j.owner and j.owner != j.author %}<br><span title="загрузил">↑ {{ j.owner }}</span>{% endif %}</td>
   <td>{{ j.created.replace('T',' ')[:16] }}</td>
   <td>{{ j.pages or '—' }}</td>
-  <td class="js-status">{% if j.status=='done' %}<span class="badge ok">готово</span>
+  <td class="js-status">{% if j.status=='done' %}<span class="badge ok">готово</span>{% if st.workflow_enabled %}
+    <br><span class="badge {{ {'signed':'ok','approved':'ok','returned':'warn'}.get(j.wf_state or '', 'grey') }}" title="Согласование">{{ {'':'ждет разбора','review':'на разборе','returned':'возвращен','approved':'согласован','signed':'утвержден'}.get(j.wf_state or '', '') }}</span>{% endif %}
     {% elif j.status=='failed' %}<span class="badge bad" title="{{ j.error }}">ошибка</span>
     {% elif j.status=='running' %}<span class="badge warn">идет · {{ (j.progress*100)|int }}%</span>
     {% else %}<span class="badge grey">в очереди</span>{% endif %}</td>

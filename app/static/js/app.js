@@ -30,8 +30,14 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': 
     const fd = new FormData(e.target), xhr = new XMLHttpRequest(), bar = $('#upprog');
     bar.style.display = 'block'; btn.disabled = true; hint.textContent = 'Загрузка…';
     xhr.upload.onprogress = ev => { if (ev.lengthComputable) $('i', bar).style.width = (ev.loaded / ev.total * 100) + '%'; };
-    xhr.onload = () => { if (xhr.status < 400) location.href = xhr.responseURL; else { hint.textContent = 'Ошибка: ' + xhr.responseText; btn.disabled = false; } };
-    xhr.onerror = () => { hint.textContent = 'Сеть недоступна'; btn.disabled = false; };
+    xhr.onload = () => {
+      if (xhr.status < 400) { location.href = xhr.responseURL; return; }
+      let msg = xhr.responseText;
+      try { const j = JSON.parse(xhr.responseText); msg = j.error || j.detail || msg; } catch (e) {}
+      if (xhr.status === 413 && !/МБ|файл/i.test(msg)) msg = 'файл слишком большой для сервера (ограничение веб-сервера или настройки «Максимальный размер файла»)';
+      hint.textContent = 'Ошибка: ' + String(msg).slice(0, 400); btn.disabled = false; bar.style.display = 'none';
+    };
+    xhr.onerror = () => { hint.textContent = 'Нет связи с сервером — проверьте сеть и повторите загрузку'; btn.disabled = false; bar.style.display = 'none'; };
     xhr.open('POST', '/upload'); xhr.send(fd);
   });
 })();
@@ -47,7 +53,7 @@ function pollJobsTable(reloadWhenDone) {
       const j = await fetch('/api/jobs/' + r.dataset.job).then(x => x.json()).catch(() => null);
       if (!j) continue;
       if (j.status !== r.dataset.status) changed = true;
-      $('.js-status', r).innerHTML = j.status === 'running' ? `<span class="badge warn">идет · ${Math.round(j.progress * 100)}%</span>` : $('.js-status', r).innerHTML;
+      $('.js-status', r).innerHTML = j.status === 'running' ? `<span class="badge warn" title="${esc(j.step || '')}">идет · ${Math.round(j.progress * 100)}%</span>` : $('.js-status', r).innerHTML;
       if (j.status === 'done' || j.status === 'failed') changed = true;
     }
     if (changed) location.reload(); else pollJobsTable(reloadWhenDone);
@@ -64,17 +70,62 @@ function markCell(td) {
 }
 function closeViewer() { $('#viewer').classList.remove('on'); }
 function closeEditor() { $('#editor').classList.remove('on'); }
+/* журнал обработки: строки с подсветкой по значкам (▶ этап, ✓ готово, … ожидание, ⚠ предупреждение, ✗ ошибка) */
+function logClass(t) {
+  if (/✗|⛔|ОШИБКА/.test(t)) return 'l-err';
+  if (/⚠/.test(t)) return 'l-warn';
+  if (/^\d\d:\d\d:\d\d (▶|■)/.test(t)) return 'l-stage';
+  if (/✓/.test(t)) return 'l-ok';
+  if (/ … /.test(t)) return 'l-beat';
+  return '';
+}
+function renderLog(pre, text) {
+  const frag = document.createDocumentFragment(), lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  lines.forEach(ln => { const sp = document.createElement('span'); sp.className = logClass(ln); sp.textContent = ln + '\n'; frag.appendChild(sp); });
+  pre.appendChild(frag);
+  while (pre.childNodes.length > 6000) pre.removeChild(pre.firstChild);    // браузер не тормозит на длинных журналах
+}
 function initJob(id) {
+  const pre = $('#joblog');
+  if (pre) { const t = pre.textContent; pre.textContent = ''; renderLog(pre, t); pre.scrollTop = pre.scrollHeight; }
   const run = $('#running');
   if (run) {
+    let offset = pre ? parseInt(pre.dataset.offset || '0', 10) : 0, fails = 0;
+    const info = $('#run-info');
     const tick = async () => {
-      const j = await fetch('/api/jobs/' + id).then(x => x.json()).catch(() => null);
-      if (j) {
-        $('#bar').style.width = Math.round(j.progress * 100) + '%';
-        $('#step').textContent = (j.step || 'В очереди') + ' · ' + Math.round(j.progress * 100) + '%';
-        if (j.status === 'done' || j.status === 'failed') { location.reload(); return; }
+      let j = null;
+      try {
+        const r = await fetch(`/api/jobs/${id}/log?offset=${offset}`, {headers: {'Accept': 'application/json'}});
+        if (r.status === 404) { location.href = '/jobs'; return; }
+        if (r.status === 401) { location.reload(); return; }
+        if (r.ok) j = await r.json();
+      } catch (e) { j = null; }
+      if (!j) {
+        fails++;
+        info.innerHTML = `<span class="warn-t">Нет связи с сервером (попытка ${fails})</span> — страница продолжит обновляться сама.`;
+        setTimeout(tick, Math.min(15000, 1500 * fails)); return;
       }
-      setTimeout(tick, 1500);
+      fails = 0;
+      if (pre) {
+        if (j.reset) pre.textContent = '';
+        if (j.text) {
+          const follow = !$('#log-follow') || $('#log-follow').checked;
+          renderLog(pre, j.text);
+          if (follow) pre.scrollTop = pre.scrollHeight;
+        }
+      }
+      offset = j.offset;
+      const pct = Math.round((j.progress || 0) * 100);
+      $('#bar').style.width = pct + '%';
+      $('#step').textContent = (j.step || 'В очереди') + (j.status === 'running' ? ' · ' + pct + '%' : '');
+      if (j.stopping) info.innerHTML = '<span class="warn-t">Останавливается…</span> Запрос к модели прерывается, это занимает 1–2 секунды.';
+      else if (j.status === 'queued') info.textContent = 'В очереди: проверка начнется, когда освободится обработчик.';
+      else if (j.idle != null && j.idle > 90) info.innerHTML = `<span class="warn-t">Нет признаков работы ${Math.round(j.idle)} с.</span> ` +
+        'Если так продолжится, остановите задание и проверьте документ заново; причины — в журнале ниже.';
+      else info.textContent = j.idle != null ? `Выполняется · последний признак работы ${Math.round(j.idle)} с назад` : '';
+      if (j.status === 'done' || j.status === 'failed') { setTimeout(() => location.reload(), 800); return; }
+      setTimeout(tick, document.hidden ? 5000 : 1500);
     };
     tick();
   }
@@ -111,7 +162,12 @@ function initJob(id) {
       $('#editor').classList.add('on'); return;
     }
     const status = tr.dataset.status === act ? 'new' : act;
-    await fetch(`/api/jobs/${id}/findings/${fid}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status})});
+    const resp = await fetch(`/api/jobs/${id}/findings/${fid}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status})})
+      .catch(() => null);
+    if (!resp || !resp.ok) {
+      const e = resp ? await resp.json().catch(() => ({})) : {};
+      alert('Отметка не сохранена: ' + (e.error || e.detail || 'нет связи с сервером')); return;
+    }
     tr.dataset.status = status; tr.className = status;
   }));
   $('#e-save') && $('#e-save').addEventListener('click', async () => {
@@ -122,8 +178,10 @@ function initJob(id) {
     if (body.type !== 'Требует проверки автором' && body.fix.trim() === $('.f-src', tr).textContent.trim()) {
       alert('«Как правильно» совпадает с цитатой — исправления нет. Выберите тип «Требует проверки автором» или измените текст.'); return;
     }
+    if (!body.note.trim()) { alert('Напишите пояснение: почему это ошибка.'); return; }
     if (body.type === 'Требует проверки автором') { body.fix = '—'; body.good = '—'; }
-    await fetch(`/api/jobs/${id}/findings/${tr.dataset.id}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const resp = await fetch(`/api/jobs/${id}/findings/${tr.dataset.id}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); alert(e.detail || e.error || 'Не сохранено'); return; }
     tr.dataset.type = body.type; tr.children[2].textContent = body.type;
     const fx = $('.f-fix', tr); fx.textContent = body.fix; fx.dataset.mark = body.good; markCell(fx);
     $('.f-note', tr).textContent = body.note; tr.dataset.status = 'accepted'; tr.className = 'accepted';
@@ -131,9 +189,15 @@ function initJob(id) {
   });
   $('#rebuild') && $('#rebuild').addEventListener('click', async () => {
     const msg = $('#rebuild-msg'); msg.textContent = 'Сборка отчета и 25 проверок…';
-    const r = await fetch(`/api/jobs/${id}/rebuild`, {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({summary: $('#summary').value})}).then(x => x.json());
-    msg.textContent = r.ok ? `Готово: ${r.count} замечаний, проверка ${r.passed}/${r.total} PASS` : `Проверка ${r.passed}/${r.total}: есть нарушения — см. список проверок`;
+    const sm = $('#summary'), body = {};
+    if (sm && sm.value !== sm.dataset.orig) body.summary = sm.value;     // итог отправляется, только если его изменили
+    let resp = null, r = {};
+    try {
+      resp = await fetch(`/api/jobs/${id}/rebuild`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      r = await resp.json().catch(() => ({}));
+    } catch (e) { msg.textContent = 'Нет связи с сервером — отчет не пересобран'; return; }
+    if (!resp.ok) { msg.textContent = 'Отчет не пересобран: ' + (r.error || r.detail || resp.status); return; }
+    msg.textContent = r.ok ? `Готово: замечаний в отчете — ${r.count}, проверка ${r.passed}/${r.total} PASS` : `Проверка ${r.passed}/${r.total}: есть нарушения — см. список проверок`;
     setTimeout(() => location.reload(), 1200);
   });
 }
@@ -170,11 +234,18 @@ async function testLdap(btn) {
   const r = await fetch('/settings/test-ldap', {method: 'POST', body: fd}).then(x => x.json()).catch(e => ({ok: false, error: String(e)}));
   out.textContent = r.ok ? '✅ ' + r.answer : '❌ ' + r.error;
 }
-async function testConn(url, btn) {
-  const out = btn.nextElementSibling;
-  out.textContent = url.startsWith('/settings/test') ? 'Проверка… (сначала сохраните настройки)' : 'Выполняется…';
-  const r = await fetch(url, {method: 'POST'}).then(x => x.json()).catch(e => ({ok: false, error: String(e)}));
-  out.textContent = r.ok ? '✅ ' + (r.answer || 'связь есть') : '❌ ' + r.error;
+async function testConn(url, btn, out) {
+  out = out || btn.nextElementSibling;
+  out.textContent = url.startsWith('/settings/test') ? 'Проверка… (используются сохраненные настройки)' : 'Выполняется…';
+  btn.disabled = true;
+  let r;
+  try {
+    const resp = await fetch(url, {method: 'POST', headers: {'Accept': 'application/json'}});
+    r = await resp.json().catch(() => ({ok: false, error: `ответ сервера ${resp.status} ${resp.statusText}`}));
+    if (!resp.ok && r.ok === undefined) r = {ok: false, error: r.error || r.detail || `ошибка ${resp.status}`};
+  } catch (e) { r = {ok: false, error: 'нет связи с сервером: ' + e}; }
+  btn.disabled = false;
+  out.textContent = r.ok ? '✅ ' + (r.answer || 'связь есть') : '❌ ' + (r.error || r.detail || 'ошибка');
 }
 async function restoreBackup(name, btn) {
   const word = prompt('Восстановить данные из копии ' + name + '?\n\nЗадания, пользователи, настройки и журнал будут заменены ' +

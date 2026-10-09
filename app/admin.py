@@ -2,6 +2,7 @@
 """Страницы администратора: пользователи и роли, журнал действий; личный кабинет (смена пароля)."""
 import csv
 import io
+import os
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -289,10 +290,15 @@ async def mgmt_report_now(request: Request):
 @router.get("/control", response_class=HTMLResponse)
 def control_page(request: Request, department: str = ""):
     from . import control
-    data = control.overview(users.own_only(me(request)), department)
+    from . import workflow
+    scope = users.own_only(me(request))
+    data = control.overview(scope, department)
     st = core.load_settings()
+    wf = workflow.summary(scope, st) if workflow.enabled(st) else None
+    if wf and department:
+        wf["rows"] = [r for r in wf["rows"] if r["department"] == department]
     return _tpl.TemplateResponse(request, "control.html", _ctx(request, "control", data=data, department=department,
-                                                               bitrix=bool(st.get("bitrix_webhook"))))
+                                                               bitrix=bool(st.get("bitrix_webhook")), wf=wf))
 
 
 @router.post("/control/remind/{jid}")
@@ -416,6 +422,42 @@ def compare_page(request: Request, a: int = 0, b: int = 0, job: int = 0):
                                                                other=other, pivot=core.get_job(pivot) if pivot else None))
 
 
+@router.get("/compare/lang", response_class=HTMLResponse)
+def compare_lang_page(request: Request, a: int = 0, b: int = 0):
+    from . import compare, langcmp
+    own = users.own_only(me(request))
+    res = langcmp.compare(a, b) if a and b and a != b else None
+    pivot = b or a
+    same, other = compare.candidates(pivot, own) if pivot and core.get_job(pivot) else ([], [])
+    if not pivot:
+        other = [j for j in core.list_jobs(2000, owner=own) if j["status"] == "done"][:300]
+    return _tpl.TemplateResponse(request, "compare_lang.html", _ctx(request, "jobs", res=res, a=a, b=b, same=same,
+                                                                    other=other, pivot=core.get_job(pivot) if pivot else None))
+
+
+@router.get("/compare/lang/export")
+def compare_lang_export(a: int, b: int):
+    from . import langcmp
+    res = langcmp.compare(a, b)
+    if not res:
+        raise HTTPException(404)
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=";")
+    for r in langcmp.rows_csv(res):
+        w.writerow([safe(x) for x in r])
+    return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename=lang_{a}_{b}.csv"})
+
+
+@router.get("/api/compare/lang")
+def compare_lang_api(a: int, b: int):
+    from . import langcmp
+    res = langcmp.compare(a, b)
+    if not res:
+        raise HTTPException(404, "оба задания должны быть готовы")
+    return res
+
+
 @router.get("/api/compare")
 def compare_api(a: int, b: int):
     from . import compare
@@ -464,7 +506,6 @@ async def settings_apply(request: Request):
 def metrics(request: Request):
     """Метрики в формате Prometheus. Доступ: с самого сервера (127.0.0.1) или с токеном REST API."""
     import hmac as _h
-    import os
     import time as _t
     st = core.load_settings()
     host = request.client.host if request.client else ""
@@ -491,13 +532,7 @@ def metrics(request: Request):
             secs.append((_dt.datetime.fromisoformat(b) - _dt.datetime.fromisoformat(a)).total_seconds())
         except (TypeError, ValueError):
             pass
-    size = 0
-    for root, _, files in os.walk(core.DATA):
-        for fn in files:
-            try:
-                size += os.path.getsize(os.path.join(root, fn))
-            except OSError:
-                pass
+    size = _data_size()
     lines = [
         "# HELP korrektor_info Версия сервиса", "# TYPE korrektor_info gauge", f'korrektor_info{{version="{core.VERSION}"}} 1',
         "# HELP korrektor_jobs Задания по состоянию", "# TYPE korrektor_jobs gauge"]
@@ -520,6 +555,24 @@ def metrics(request: Request):
         "# HELP korrektor_scrape_timestamp Время сбора", "# TYPE korrektor_scrape_timestamp gauge", f"korrektor_scrape_timestamp {int(_t.time())}",
     ]
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+_size_cache = [0.0, 0]
+
+
+def _data_size():
+    """Размер папки данных — не чаще раза в 10 минут (обход тысяч изображений страниц на каждый сбор метрик дорог)."""
+    import time as _t
+    if _t.time() - _size_cache[0] > 600:
+        size = 0
+        for root, _, files in os.walk(core.DATA):
+            for fn in files:
+                try:
+                    size += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+        _size_cache[:] = [_t.time(), size]
+    return _size_cache[1]
 
 
 @router.get("/compare/page.png")
@@ -552,7 +605,7 @@ def backup_download(request: Request, name: str):
     if not path:
         raise HTTPException(404)
     users.audit(request, "download", name, "резервная копия")
-    return FileResponse(path, filename=name, media_type="application/gzip")
+    return FileResponse(path, filename=name, media_type="application/octet-stream" if name.endswith(".enc") else "application/gzip")
 
 
 @router.post("/settings/backups/{name}/verify")
@@ -563,7 +616,8 @@ async def backup_verify(request: Request, name: str):
         raise HTTPException(404)
     r = await run_in_threadpool(backup.verify, path)
     if r["ok"]:
-        txt = (f"копия исправна: база — ok, заданий {r.get('db_jobs', 0)}, пользователей {r.get('db_users', 0)}"
+        txt = (("зашифрованная " if r.get("encrypted") else "") +
+               f"копия исправна: база — ok, заданий {r.get('db_jobs', 0)}, пользователей {r.get('db_users', 0)}"
                + ("" if r.get("pages_included") else "; изображения страниц не входят") + (f"; контрольная сумма {r['sha256']}" if r.get("sha256") else ""))
     else:
         txt = "копия повреждена: " + "; ".join(r["errors"])
@@ -599,10 +653,10 @@ async def backup_upload(request: Request):
     f = form.get("file")
     if not f or not getattr(f, "filename", ""):
         return RedirectResponse("/settings?berror=Выберите файл#backup", status_code=303)
-    head = await f.read(2)
+    head = await f.read(15)
     await f.seek(0)
-    if head != b"\x1f\x8b":
-        return RedirectResponse("/settings?berror=Это не архив .tgz#backup", status_code=303)
+    if head[:2] != b"\x1f\x8b" and head != b"KORREKTOR-ENC1\n":
+        return RedirectResponse("/settings?berror=Это не резервная копия Корректора (.tgz или .tgz.enc)#backup", status_code=303)
     try:
         path = await run_in_threadpool(backup.save_upload, f.file)
     except (ValueError, OSError) as e:
