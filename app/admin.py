@@ -578,7 +578,10 @@ def _data_size():
 @router.get("/compare/page.png")
 def compare_page_png(a: int, b: int, p: int, side: str = "b"):
     from . import compare
-    res = compare.page_diff_png(a, b, p, "a" if side == "a" else "b")
+    try:
+        res = compare.page_diff_png(a, b, p, "a" if side == "a" else "b")
+    except TimeoutError:
+        raise HTTPException(503, "Сервер занят обработкой PDF — обновите страницу через минуту")
     if not res:
         raise HTTPException(404)
     return Response(res[0], media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})

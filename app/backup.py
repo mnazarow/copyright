@@ -106,7 +106,8 @@ def run(st=None, reason="расписание", rotate=True):
             p = ti.name
             if not pages and re.search(r"/pages(/|$)", p):
                 return None
-            if p.endswith((".tmp", ".part", "korrektor.db", "korrektor.db-journal", "/.secret", "/.admin_totp.json")) \
+            if p.endswith((".tmp", ".part", "korrektor.db", "korrektor.db-journal", "korrektor.db-wal", "korrektor.db-shm",
+                           "/.secret", "/.admin_totp.json", "/.state.lock")) or re.search(r"/\.[^/]*\.lock$", p) \
                     or "/__pycache__" in p or "/.restore-" in p:   # ключ подписи сеансов в копию не кладется
                 return None                             # базу добавляем отдельно — согласованной копией
             full = os.path.realpath(os.path.join(os.path.dirname(data_real), p))

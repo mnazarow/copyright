@@ -13,7 +13,7 @@ import time
 import pymupdf
 
 from . import autofix, exports, llm, office, preflight, spell
-from .common import AUTHOR, Cancelled, PageIndex, dur, norm, page_list, plural, safe_dpi, yo
+from .common import AUTHOR, PDF_LOCK, Cancelled, PageIndex, dur, norm, page_list, plural, safe_dpi, yo
 
 _log = logging.getLogger("korrektor")
 
@@ -93,8 +93,9 @@ def render_pages(pdf, outdir, dpi, should_stop=None, on_page=None):
                 raise Cancelled()
             fn = os.path.join(outdir, f"p{pno:03d}.png")
             if not os.path.exists(fn):
-                page.get_pixmap(dpi=safe_dpi(page, dpi)).save(fn + ".tmp.png")
-                os.replace(fn + ".tmp.png", fn)
+                tmp = f"{fn}.{os.getpid()}.tmp.png"      # страницу может одновременно рисовать и веб-сервер
+                page.get_pixmap(dpi=safe_dpi(page, dpi)).save(tmp)
+                os.replace(tmp, fn)
             if on_page:
                 on_page(pno, n)
         return n
@@ -291,7 +292,8 @@ def build_report(job_dir, state, st, log):
     data = {"document": meta,
             "findings": [{k: clean(f[k]) for k in ("page", "clause", "type", "src", "bad", "fix", "good", "note")} for f in fl],
             "rejected": rejected, "reviewed": state.get("reviewed", [])}
-    json.dump(data, open(os.path.join(job_dir, "findings.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    with open(os.path.join(job_dir, "findings.json"), "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
     base = state["report_base"]
     docx = base + ".docx"
     code, out, err = sh([os.path.join(SCRIPTS, "build.py"), "findings.json", docx], job_dir)
@@ -317,7 +319,9 @@ def build_report(job_dir, state, st, log):
         files["json"] = "findings.json"
     if "pdf_annot" in fm:
         try:
-            n = preflight.annotate(os.path.join(job_dir, "source.pdf"), fl, os.path.join(job_dir, base + "_пометки.pdf"))
+            with PDF_LOCK:                             # пересборка отчета идет и в потоках веб-сервера
+                n = preflight.annotate(os.path.join(job_dir, "source.pdf"), fl,
+                                       os.path.join(job_dir, base + "_пометки.pdf"))
             files["pdf_annot"] = base + "_пометки.pdf"
             log(f"PDF с пометками: подсвечено {n} из {len(fl)} замечаний")
         except Exception as e:  # noqa

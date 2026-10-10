@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Конфигурация, настройки, база заданий, авторизация и фоновые обработчики."""
-import collections
+import copy
+import ctypes
 import datetime as dt
 import hashlib
 import hmac
@@ -9,7 +10,10 @@ import logging
 import os
 import secrets
 import shutil
+import signal
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -73,14 +77,52 @@ def _migrate(st):
     return st
 
 
+_settings_cache = {"key": None, "value": None}
+_SCALARS = (str, int, float, bool, type(None))
+_settings_cache_lock = threading.Lock()        # отдельная от _lock: чтение настроек не ждет очередь заданий
+
+
+def _settings_key():
+    try:
+        s = os.stat(SETTINGS_FILE)
+        return s.st_mtime_ns, s.st_size, s.st_ino     # os.replace дает новый inode — любая запись меняет ключ
+    except OSError:
+        return None
+
+
 def load_settings():
+    """Настройки (копия; изменять ее можно). Файл читается заново только после его изменения: функция
+    вызывается по нескольку раз на каждый запрос, в том числе в потоке обработки событий веб-сервера."""
+    key = _settings_key()
+    if key is not None:
+        with _settings_cache_lock:
+            cached = _settings_cache["value"] if _settings_cache["key"] == key else None
+        if cached is not None:
+            return {k: v if isinstance(v, _SCALARS) else copy.deepcopy(v) for k, v in cached.items()}
+    st = _load_settings_file()
+    if key is not None and _settings_key() == key:        # файл не меняли во время чтения
+        with _settings_cache_lock:
+            _settings_cache.update(key=key, value=copy.deepcopy(st))
+    return st
+
+
+def _settings_written():
+    with _settings_cache_lock:
+        _settings_cache.update(key=None, value=None)
+
+
+def _load_settings_file():
     st = dict(DEFAULTS)
     saved = {}
     if os.path.exists(SETTINGS_FILE):
         try:
-            saved = json.load(open(SETTINGS_FILE, encoding="utf-8"))
+            with open(SETTINGS_FILE, encoding="utf-8") as fh:
+                saved = json.load(fh)
+            if not isinstance(saved, dict):
+                raise ValueError("ожидается JSON-объект")
         except Exception:  # noqa
             log.exception("settings.json поврежден, используются значения по умолчанию")
+            saved = {}
     for k, v in saved.items():                        # значения проверяются по схеме: испорченный файл не роняет проверки
         if k in SCHEMA:
             try:
@@ -98,6 +140,27 @@ def load_settings():
     return st
 
 
+def _write_settings(clean):
+    """Запись settings.json через временный файл. Ошибка записи (диск переполнен) не оставляет обрезанный файл:
+    она всплывает до замены, а не теряется при закрытии файла."""
+    tmp = f"{SETTINGS_FILE}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(clean, fh, ensure_ascii=False, indent=1)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SETTINGS_FILE)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    finally:
+        _settings_written()
+
+
 def update_settings(fn):
     """Чтение → изменение → запись настроек под блокировкой (параллельные изменения не теряются)."""
     with _lock:
@@ -105,10 +168,7 @@ def update_settings(fn):
         fn(st)
         clean = {k: v for k, v in st.items() if k in SCHEMA}
         clean["_version"] = SETTINGS_VERSION
-        tmp = SETTINGS_FILE + ".tmp"
-        json.dump(clean, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, SETTINGS_FILE)
+        _write_settings(clean)
         return st
 
 
@@ -116,10 +176,7 @@ def save_settings(values):
     with _lock:
         clean = {k: v for k, v in values.items() if k in SCHEMA or k == "_version"}
         clean["_version"] = SETTINGS_VERSION
-        tmp = SETTINGS_FILE + ".tmp"
-        json.dump(clean, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, SETTINGS_FILE)
+        _write_settings(clean)
 
 
 def coerce(key, raw):
@@ -152,14 +209,54 @@ def coerce(key, raw):
 
 
 # ------------------------------------------------------------------ база
+class _Conn(sqlite3.Connection):
+    """Соединение для «with db() as c:» — при выходе из блока фиксация (или откат) и закрытие. Прежде соединения
+    не закрывались: с Python 3.11 они держатся циклическими ссылками до сборки мусора, и открытые файлы базы
+    копились под нагрузкой."""
+
+    def __exit__(self, et, ev, tb):
+        try:
+            return super().__exit__(et, ev, tb)
+        finally:
+            self.close()
+
+
+_wal = {"on": None}
+
+
 def db():
-    con = sqlite3.connect(DB_FILE, timeout=30)
+    con = sqlite3.connect(DB_FILE, timeout=30, factory=_Conn)
     con.row_factory = sqlite3.Row
+    try:
+        if _wal["on"] is None:
+            _wal["on"] = con.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        if _wal["on"]:
+            con.execute("PRAGMA synchronous=NORMAL")   # в режиме WAL надежно и без fsync на каждую запись
+    except sqlite3.Error:
+        pass
     return con
+
+
+def _enable_wal():
+    """Режим WAL: чтение не ждет записи. Без него каждая запись (ход задания раз в секунду, журнал действий)
+    блокирует всех читателей, а проверка входа на каждом запросе ждала до 30 секунд в потоке событий веб-сервера —
+    сервис «зависал» целиком, включая /api/health."""
+    try:
+        con = sqlite3.connect(DB_FILE, timeout=30)
+        try:
+            mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower()
+        finally:
+            con.close()
+        _wal["on"] = mode == "wal"
+        if mode != "wal":
+            log.warning("база данных: режим WAL недоступен (%s) — папка данных на сетевом диске?", mode)
+    except sqlite3.Error:
+        log.exception("база данных: режим WAL не включен")
 
 
 def init_db():
     from . import users
+    _enable_wal()
     users.init()
     old = os.path.join(APP_DIR, "prompts", "custom_prompt.md")     # перенос из версий до 1.2
     if os.path.exists(old) and not os.path.exists(CUSTOM_PROMPT):
@@ -176,11 +273,20 @@ def init_db():
         cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
         for col, ddl in (("started", "TEXT"), ("owner", "TEXT DEFAULT ''"), ("author", "TEXT DEFAULT ''"),
                          ("department", "TEXT DEFAULT ''"), ("doc_type", "TEXT DEFAULT ''"),   # миграции 1.0–1.2
-                         ("beat", "REAL DEFAULT 0")):          # 1.6: время последних признаков работы задания
+                         ("beat", "REAL DEFAULT 0"),           # 1.6: время последних признаков работы задания
+                         ("attempts", "INTEGER DEFAULT 0")):   # сколько раз подряд задание бралось в работу
             if col not in cols:
                 c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
         c.execute("CREATE INDEX IF NOT EXISTS jobs_batch ON jobs(batch)")
         c.execute("CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status)")
+        # задание, на котором служба уже несколько раз аварийно завершалась, снова в очередь не ставится:
+        # иначе оно первым уходит в работу после каждого перезапуска и роняет службу по кругу
+        c.execute("UPDATE jobs SET status='failed', step='Ошибка', progress=0, error=? "
+                  "WHERE status='running' AND attempts>=?",
+                  (f"обработка {MAX_ATTEMPTS} раза подряд прерывалась остановкой или аварийным завершением службы — "
+                   "задание снято с очереди. Проверьте журнал службы; перезапустить проверку можно кнопкой "
+                   "«Проверить заново»",
+                   MAX_ATTEMPTS))
         c.execute("UPDATE jobs SET status='queued', progress=0 WHERE status='running'")
         c.execute("UPDATE jobs SET status='failed', error='загрузка прервана перезапуском службы', step='Ошибка' "
                   "WHERE status='uploading'")
@@ -260,12 +366,51 @@ def delete_job(jid):
             pass
 
 
-_state_locks = collections.defaultdict(threading.RLock)
+class _StateLock:
+    """Блокировка «прочитать → изменить → записать» state.json одного задания: между потоками (RLock) и между
+    процессами (flock на файле в папке задания) — сводку пакета теперь пишет отдельный процесс."""
+
+    def __init__(self, jid):
+        self.jid, self.rlock, self.depth, self.fh = int(jid), threading.RLock(), 0, None
+
+    def __enter__(self):
+        self.rlock.acquire()
+        if self.depth == 0:
+            try:
+                import fcntl
+                self.fh = open(os.path.join(job_dir(self.jid), STATE_LOCK), "a")
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+            except (OSError, ImportError):
+                if self.fh:
+                    self.fh.close()
+                self.fh = None
+        self.depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        self.depth -= 1
+        if self.depth == 0 and self.fh is not None:
+            try:
+                self.fh.close()                          # закрытие снимает flock
+            except OSError:
+                pass
+            self.fh = None
+        self.rlock.release()
+        return False
+
+
+STATE_LOCK = ".state.lock"
+_state_locks = {}
+_state_locks_guard = threading.Lock()
 
 
 def state_lock(jid):
     """Блокировка «прочитать → изменить → записать» state.json одного задания."""
-    return _state_locks[int(jid)]
+    with _state_locks_guard:
+        lk = _state_locks.get(int(jid))
+        if lk is None:
+            lk = _state_locks[int(jid)] = _StateLock(jid)
+        return lk
 
 
 def load_state(jid):
@@ -281,7 +426,7 @@ def load_state(jid):
 
 
 def write_json_atomic(path, data, **kw):
-    tmp = f"{path}.{threading.get_ident()}.tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"     # номера потоков разных процессов совпадают
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, **kw)
     os.replace(tmp, path)
@@ -364,10 +509,208 @@ def cancel_job(jid):
             return "stopping"
 
 
+MAX_ATTEMPTS = 3                    # столько раз подряд задание может прерваться остановкой службы, потом — «Ошибка»
+CANCEL_GRACE = 60                   # с: столько процесс задания может завершаться после «Остановить», потом — принудительно
+BATCH_TIMEOUT = 3600                # с: сводка пакета (сравнение версий, пересборка отчетов)
+INTERRUPT_REQUEUE = 30             # с: задание, прерванное SIGTERM без остановки службы, возвращается в очередь
+EXIT_INTERRUPTED = 75              # код процесса задания: прерван остановкой службы (SIGTERM) — задание вернется в очередь
+_SIGNALS = {getattr(signal, n): n for n in ("SIGKILL", "SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE", "SIGILL", "SIGTERM",
+                                            "SIGINT", "SIGHUP", "SIGUSR1") if hasattr(signal, n)}
+
+
+def _inline():
+    """KORREKTOR_JOB_PROCESS=0 — обработка в потоке самого веб-сервера (как раньше; только для отладки)."""
+    return os.environ.get("KORREKTOR_JOB_PROCESS", "1").strip().lower() in ("0", "no", "false", "off")
+
+
 def _process(jid):
+    """Задание обрабатывается отдельным процессом (python -m app.worker job N). Разбор PDF (PyMuPDF/MuPDF —
+    библиотека на C), картинки страниц, LibreOffice, проход ИИ больше не работают внутри веб-сервера: аварийное
+    завершение библиотеки на «трудном» PDF или нехватка памяти завершают только процесс этого задания (оно
+    получает понятную ошибку), а служба продолжает работать. Память, занятая обработкой, возвращается системе
+    с завершением процесса — веб-сервер не «раздувается» от задания к заданию."""
+    job = get_job(jid)
+    if not job:
+        return
+    if _inline():
+        _run_job(jid)
+    elif _supervise(jid) == "interrupted":
+        return                                       # служба останавливается: без уведомлений и сводки пакета
+    try:
+        from . import notify
+        notify.job_event_async(jid)
+    except Exception:  # noqa
+        log.exception("уведомления")
+    if job.get("batch"):                             # сводка пакета — и при ошибке последнего задания
+        try:
+            finish_batch(job["batch"])
+        except Exception:  # noqa
+            log.exception("сводка пакета %s", job["batch"])
+    trim_memory()
+
+
+def _job_log_line(jid, msg):
+    try:
+        with open(os.path.join(job_dir(jid), "job.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"{dt.datetime.now():%H:%M:%S} {msg}\n")
+    except OSError:
+        pass
+
+
+def _spawn(args):
+    """Дочерний процесс Python с кодом сервиса. Своя группа процессов: при остановке завершаются и его
+    собственные дочерние процессы (extract.py, hunspell)."""
+    env = dict(os.environ, KORREKTOR_PARENT_PID=str(os.getpid()), PYTHONFAULTHANDLER="1")
+    return subprocess.Popen([sys.executable, "-m", "app.worker"] + [str(a) for a in args], cwd=ROOT,
+                            stdin=subprocess.DEVNULL, env=env, start_new_session=True)
+
+
+def _kill_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _death_reason(rc, cancelled):
+    if cancelled:
+        return "остановлено пользователем"
+    if rc is not None and rc < 0:
+        name = _SIGNALS.get(-rc, f"сигнал {-rc}")
+        if -rc == getattr(signal, "SIGKILL", 9):
+            return ("процесс обработки принудительно завершен (SIGKILL) — чаще всего так система освобождает память, "
+                    "когда ее не хватает (проверьте: dmesg | grep -i oom). Уменьшите «Разрешение изображений страниц» "
+                    "или «Одновременных заданий», добавьте серверу памяти или проверяйте документ частями")
+        if name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE", "SIGILL"):
+            return (f"аварийное завершение процесса обработки ({name}) — сбой библиотеки разбора PDF на этом файле; "
+                    "служба продолжает работать. Пересохраните PDF (например, «Сохранить как» или печать в PDF) "
+                    "и загрузите снова")
+        return f"процесс обработки завершен сигналом {name}"
+    return f"процесс обработки завершился с кодом {rc}, не записав результат — подробности в журнале службы"
+
+
+def _supervise(jid):
+    """→ "interrupted", если процесс задания прерван остановкой службы (задание возвращено в очередь)."""
+    try:
+        return _supervise_inner(jid)
+    finally:
+        CANCEL.discard(jid)
+
+
+def _supervise_inner(jid):
+    try:
+        os.makedirs(job_dir(jid), exist_ok=True)
+        proc = _spawn(["job", jid])
+    except OSError as e:
+        update_job(jid, status="failed", step="Ошибка", error="процесс обработки не запустился: " + explain_error(e),
+                   finished=dt.datetime.now().isoformat(timespec="seconds"))
+        return None
+    cancel_at = None
+    try:
+        while True:
+            try:
+                proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if jid in CANCEL:
+                if cancel_at is None:                    # мягкая остановка: процесс завершит этап и запишет итог
+                    cancel_at = time.time()
+                    try:
+                        os.kill(proc.pid, signal.SIGUSR1)
+                    except OSError:
+                        pass
+                elif time.time() - cancel_at > CANCEL_GRACE:
+                    _kill_group(proc)
+    except BaseException:
+        _kill_group(proc)
+        raise
+    finally:
+        _kill_group(proc)                            # оставшиеся дочерние процессы задания
+        try:
+            proc.wait(5)
+        except Exception:  # noqa
+            pass
+    rc = proc.returncode
+    cancelled = jid in CANCEL
+    row = get_job(jid)
+    if not row or row["status"] != "running":          # процесс записал итог сам
+        return None
+    if not cancelled and rc in (EXIT_INTERRUPTED, -getattr(signal, "SIGTERM", 15)):
+        # остановка службы (systemd шлет SIGTERM всем ее процессам сразу): задание не «ошибка» — оно остается
+        # «выполняется», и при запуске служба вернет его в очередь (init_db). Эта попытка не считается падением.
+        _job_log_line(jid, "■ Обработка прервана остановкой службы — задание продолжится после ее запуска")
+        log.warning("задание %s: обработка прервана остановкой службы", jid)
+        with db() as c:
+            c.execute("UPDATE jobs SET step=?, attempts=MAX(COALESCE(attempts, 1) - 1, 0) WHERE id=?",
+                      ("Прервано остановкой службы", jid))
+        # служба не останавливается (процесс задания завершили вручную) — через полминуты задание снова в очереди;
+        # при настоящей остановке веб-сервер к этому времени уже завершен
+        time.sleep(INTERRUPT_REQUEUE)
+        with db() as c:
+            c.execute("UPDATE jobs SET status='queued', progress=0, step='В очереди' WHERE id=? AND status='running'",
+                      (jid,))
+        kick()
+        return "interrupted"
+    msg = _death_reason(rc, cancelled)
+    _job_log_line(jid, ("■ " if cancelled else "✗ ОШИБКА: ") + msg)
+    if cancelled:
+        log.info("задание %s: остановлено пользователем (процесс завершен принудительно)", jid)
+    else:
+        log.error("задание %s: %s (код процесса %s)", jid, msg, rc)
+    update_job(jid, status="failed", error=msg[:500], step="Остановлено" if cancelled else "Ошибка",
+               finished=dt.datetime.now().isoformat(timespec="seconds"))
+    return None
+
+
+def finish_batch(batch):
+    """Сводка пакета (сравнение версий, сверка реквизитов, пересборка отчетов) — тоже отдельным процессом."""
+    from . import batch as batchmod
+    if _inline():
+        return batchmod.maybe_finish(batch)
+    jobs = list_jobs(batch=batch)
+    if len(jobs) < 2 or any(j["status"] in ("queued", "running", "uploading") for j in jobs):
+        return None
+    proc = _spawn(["batch", batch])
+    try:
+        proc.wait(BATCH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log.error("сводка пакета %s не завершилась за %s с — прервана", batch, BATCH_TIMEOUT)
+    finally:
+        _kill_group(proc)
+        try:
+            proc.wait(5)
+        except Exception:  # noqa
+            pass
+    if proc.returncode:
+        log.error("сводка пакета %s: процесс завершился с кодом %s", batch, proc.returncode)
+    return None
+
+
+def trim_memory():
+    """Возвращает системе освобожденную память кучи (glibc держит ее у процесса)."""
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # noqa — не Linux/glibc
+        pass
+
+
+def limit_malloc_arenas():
+    """glibc заводит до 8 × число ядер «арен» памяти — по одной на поток; в долгоживущем процессе с пулом из
+    40 потоков освобожденная память в них оседает, и процесс растет без утечки объектов. Две арены — как
+    MALLOC_ARENA_MAX=2 (вызывать до запуска потоков)."""
+    if os.environ.get("MALLOC_ARENA_MAX"):
+        return
+    try:
+        ctypes.CDLL("libc.so.6").mallopt(-8, 2)            # M_ARENA_MAX
+    except Exception:  # noqa
+        pass
+
+
+def _run_job(jid):
+    """Обработка задания (в процессе app.worker или, при KORREKTOR_JOB_PROCESS=0, в потоке веб-сервера)."""
     from .pipeline import run
     from .pipeline.common import Cancelled
-    from . import batch as batchmod
     job = get_job(jid)
     if not job:
         return
@@ -457,7 +800,7 @@ def _process(jid):
         prov = st.get("ai_provider")
         use_ai = st.get("mode") == "rules_ai" or (st.get("mode", "auto") == "auto" and prov not in (None, "", "none"))
         jlog(f"■ Задание № {jid}: «{job.get('filename')}», " + f"{(job.get('size') or 0) / 2 ** 20:.1f}".replace(".", ",")
-             + f" МБ — Корректор {VERSION}")
+             + f" МБ — Корректор {VERSION}, процесс {os.getpid()}")
         jlog(f"Профиль «{st.get('profile')}», режим «{st.get('mode')}», проходы: {', '.join(st.get('passes') or []) or '—'}; "
              + (f"ИИ: {prov}, модель {st.get('ai_model')}" if use_ai and prov not in (None, "", "none")
                 else "ИИ: не используется"))
@@ -491,16 +834,6 @@ def _process(jid):
         CANCEL.discard(jid)
         with wlock:
             logf.close()
-    try:
-        from . import notify
-        notify.job_event_async(jid)
-    except Exception:  # noqa
-        log.exception("уведомления")
-    if job.get("batch"):                             # сводка пакета — и при ошибке последнего задания
-        try:
-            batchmod.maybe_finish(job["batch"])
-        except Exception:  # noqa
-            log.exception("сводка пакета %s", job["batch"])
 
 
 def _save_timing(d, timing):
@@ -528,8 +861,8 @@ def worker_loop():
                 with db() as c:
                     r = None if PAUSED.is_set() else \
                         c.execute("SELECT id FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
-                    if r and c.execute("UPDATE jobs SET status='running' WHERE id=? AND status='queued'",
-                                       (r["id"],)).rowcount:
+                    if r and c.execute("UPDATE jobs SET status='running', attempts=COALESCE(attempts, 0)+1 "
+                                       "WHERE id=? AND status='queued'", (r["id"],)).rowcount:
                         jid = r["id"]
                         BUSY.add(jid)                # под той же блокировкой, что и «Остановить» (cancel_job)
         except sqlite3.Error:
@@ -542,7 +875,9 @@ def worker_loop():
             except Exception:  # noqa — поток-обработчик не должен завершаться
                 log.exception("обработчик: задание %s", jid)
                 try:
-                    update_job(jid, status="failed", error="внутренняя ошибка обработчика", step="Ошибка")
+                    with db() as c:                  # итог, уже записанный процессом задания, не затирается
+                        c.execute("UPDATE jobs SET status='failed', error=?, step='Ошибка' WHERE id=? AND "
+                                  "status='running'", ("внутренняя ошибка обработчика", jid))
                 except Exception:  # noqa
                     pass
             finally:
@@ -571,6 +906,9 @@ def expired_jobs(st, now=None):
 
 def cleanup_loop():
     while True:
+        if PAUSED.is_set():                          # идет восстановление из копии — не удалять задания
+            time.sleep(60)
+            continue
         try:
             for j in expired_jobs(load_settings()):
                 delete_job(j["id"])
@@ -579,6 +917,7 @@ def cleanup_loop():
             users.cleanup_audit(int(load_settings().get("audit_days") or 365))
         except Exception:  # noqa
             log.exception("очистка")
+        trim_memory()
         time.sleep(3600)
 
 
@@ -594,6 +933,8 @@ def apply_log_level(st=None):
 
 def start_workers():
     global _started
+    if not _started:
+        limit_malloc_arenas()
     init_db()
     apply_log_level()
     if _started:

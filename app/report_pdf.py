@@ -207,105 +207,107 @@ def build(q, title_extra=""):
     t = analytics.trends(dict(tq, gran=gran))
     k, cmp_, g = a["kpi"], t.get("compare") or {}, a["goals"]
     st = core.load_settings()
-    d = Doc()
-    d.new_page()
-    p = d.page
-    # шапка
-    try:
-        logo = pymupdf.open(LOGO)
-        lp = pymupdf.open("pdf", logo.convert_to_pdf())
-        p.show_pdf_page(pymupdf.Rect(M, M - 6, M + 82, M + 51), lp, 0)
-    except Exception:  # noqa — без логотипа отчет все равно нужен
-        pass
-    f = a["filters"]
-    d.text(M + 100, M + 14, "Качество документации", 18, True, BRAND)
-    def _day(x):
-        return f"{dt.date.fromisoformat(x):%d.%m.%Y}" if x else "…"
-    per = f"{_day(f.get('from'))} — {_day(f.get('to') or dt.date.today().isoformat())}" if f.get("from") or f.get("to") else "весь период"
-    d.text(M + 100, M + 32, f"Отчет для руководства за период {per}{title_extra}", 9.5, color=MUTED)
-    d.text(M + 100, M + 45, f"Сформирован {dt.datetime.now():%d.%m.%Y %H:%M} сервисом «Корректор» {core.VERSION}", 8, color=MUTED)
-    d.y = M + 70
+    from .pipeline.common import PDF_LOCK
+    with PDF_LOCK:                                  # PyMuPDF — по одному потоку (см. PDF_LOCK)
+        d = Doc()
+        d.new_page()
+        p = d.page
+        # шапка
+        try:
+            with pymupdf.open(LOGO) as logo, pymupdf.open("pdf", logo.convert_to_pdf()) as lp:
+                p.show_pdf_page(pymupdf.Rect(M, M - 6, M + 82, M + 51), lp, 0)
+        except Exception:  # noqa — без логотипа отчет все равно нужен
+            pass
+        f = a["filters"]
+        d.text(M + 100, M + 14, "Качество документации", 18, True, BRAND)
+        def _day(x):
+            return f"{dt.date.fromisoformat(x):%d.%m.%Y}" if x else "…"
+        per = f"{_day(f.get('from'))} — {_day(f.get('to') or dt.date.today().isoformat())}" if f.get("from") or f.get("to") else "весь период"
+        d.text(M + 100, M + 32, f"Отчет для руководства за период {per}{title_extra}", 9.5, color=MUTED)
+        d.text(M + 100, M + 45, f"Сформирован {dt.datetime.now():%d.%m.%Y %H:%M} сервисом «Корректор» {core.VERSION}", 8, color=MUTED)
+        d.y = M + 70
 
-    # ключевые показатели
-    tiles = [("Документов проверено", k["docs"], "docs", 0, ""), ("Страниц", k["pages"], "pages", 0, ""),
-             ("Замечаний на 10 страниц", k["density"], "density", 2, ""),
-             ("Точность замечаний", k["precision"], "precision", 1, " %"),
-             ("Отчетов приняли 25/25", k["verify_rate"], "verify_rate", 1, " %"),
-             ("Документов выше цели", k.get("over_goal", 0), None, 0, "")]
-    tw, th = (W - 2 * M - 20) / 3, 58
-    for i, (lab, val, key, dec, suf) in enumerate(tiles):
-        x0 = M + (i % 3) * (tw + 10)
-        y0 = d.y + (i // 3) * (th + 10)
-        p.draw_rect(pymupdf.Rect(x0, y0, x0 + tw, y0 + th), color=GRID, fill=(0.97, 0.98, 0.99), width=0.8, radius=0.08)
-        d.text(x0 + 10, y0 + 15, lab, 8, color=MUTED)
-        d.text(x0 + 10, y0 + 37, _fmt(float(val) if isinstance(val, float) else val, dec, suf), 17, True)
-        c = cmp_.get(key) if key else None
-        if c and c.get("pct") is not None:
-            arrow = "▲" if (c["delta"] or 0) > 0 else "▼" if (c["delta"] or 0) < 0 else "="
-            word = {"better": "лучше", "worse": "хуже"}.get(c["verdict"], "")
-            col = GOOD if c["verdict"] == "better" else BAD if c["verdict"] == "worse" else MUTED
-            d.text(x0 + 10, y0 + 51, f"{arrow} {_fmt(abs(c['pct']), 1)} % к прошлому периоду {('— ' + word) if word else ''}", 7,
-                   color=col)
-        goal = g.get(key) if key else None
-        if goal and key in ("density", "precision", "verify_rate"):
-            d.text(x0 + tw - 10 - d.width(f"цель {_fmt(goal)}", 7), y0 + 15, f"цель {_fmt(goal)}", 7, color=MUTED)
-    d.y += 2 * th + 10 + 34
+        # ключевые показатели
+        tiles = [("Документов проверено", k["docs"], "docs", 0, ""), ("Страниц", k["pages"], "pages", 0, ""),
+                 ("Замечаний на 10 страниц", k["density"], "density", 2, ""),
+                 ("Точность замечаний", k["precision"], "precision", 1, " %"),
+                 ("Отчетов приняли 25/25", k["verify_rate"], "verify_rate", 1, " %"),
+                 ("Документов выше цели", k.get("over_goal", 0), None, 0, "")]
+        tw, th = (W - 2 * M - 20) / 3, 58
+        for i, (lab, val, key, dec, suf) in enumerate(tiles):
+            x0 = M + (i % 3) * (tw + 10)
+            y0 = d.y + (i // 3) * (th + 10)
+            p.draw_rect(pymupdf.Rect(x0, y0, x0 + tw, y0 + th), color=GRID, fill=(0.97, 0.98, 0.99), width=0.8, radius=0.08)
+            d.text(x0 + 10, y0 + 15, lab, 8, color=MUTED)
+            d.text(x0 + 10, y0 + 37, _fmt(float(val) if isinstance(val, float) else val, dec, suf), 17, True)
+            c = cmp_.get(key) if key else None
+            if c and c.get("pct") is not None:
+                arrow = "▲" if (c["delta"] or 0) > 0 else "▼" if (c["delta"] or 0) < 0 else "="
+                word = {"better": "лучше", "worse": "хуже"}.get(c["verdict"], "")
+                col = GOOD if c["verdict"] == "better" else BAD if c["verdict"] == "worse" else MUTED
+                d.text(x0 + 10, y0 + 51, f"{arrow} {_fmt(abs(c['pct']), 1)} % к прошлому периоду {('— ' + word) if word else ''}", 7,
+                       color=col)
+            goal = g.get(key) if key else None
+            if goal and key in ("density", "precision", "verify_rate"):
+                d.text(x0 + tw - 10 - d.width(f"цель {_fmt(goal)}", 7), y0 + 15, f"цель {_fmt(goal)}", 7, color=MUTED)
+        d.y += 2 * th + 10 + 34
 
-    # график плотности
-    dens = t["series"]["density"]
-    line_chart(d, M, d.y, W - 2 * M, 170, t["labels"], dens, g.get("density"),
-               f"Замечаний на 10 страниц по {({'day': 'дням', 'week': 'неделям'}).get(gran, 'месяцам')}")
-    d.y += 170 + 30
+        # график плотности
+        dens = t["series"]["density"]
+        line_chart(d, M, d.y, W - 2 * M, 170, t["labels"], dens, g.get("density"),
+                   f"Замечаний на 10 страниц по {({'day': 'дням', 'week': 'неделям'}).get(gran, 'месяцам')}")
+        d.y += 170 + 30
 
-    # частые ошибки
-    rows = [(r["label"], r["n"]) for r in a["top_rules"][:10]]
-    if rows:
-        end = hbar_chart(d, M, d.y, W - 2 * M, rows, "Самые частые ошибки (замечаний)")
-        d.y = end + 6
-    d.para("Плотность ошибок — число замечаний на 10 страниц: она позволяет сравнивать документы разного объема. "
-           "Точность — доля замечаний, которые корректор принял (✓), среди отмеченных. «25/25» — отчет прошел все "
-           "машинные проверки оформления.", 7.5, color=MUTED)
+        # частые ошибки
+        rows = [(r["label"], r["n"]) for r in a["top_rules"][:10]]
+        if rows:
+            end = hbar_chart(d, M, d.y, W - 2 * M, rows, "Самые частые ошибки (замечаний)")
+            d.y = end + 6
+        d.para("Плотность ошибок — число замечаний на 10 страниц: она позволяет сравнивать документы разного объема. "
+               "Точность — доля замечаний, которые корректор принял (✓), среди отмеченных. «25/25» — отчет прошел все "
+               "машинные проверки оформления.", 7.5, color=MUTED)
 
-    # отделы
-    deps = [r for r in a["by_department"] if r["docs"]]
-    if len(deps) > 1 or (deps and deps[0]["key"]):
-        d.h2("По отделам")
-        table(d, ["Отдел", "Документов", "Страниц", "На 10 стр.", "Точность, %", "25/25, %"],
-              [[r["label"], r["docs"], r["pages"], _fmt(r["density"], 2), _fmt(r["precision"]), _fmt(r["verify_rate"])]
-               for r in deps[:15]], [175, 70, 60, 70, 70, 70])
-    auth = [r for r in a["by_author"] if r["docs"] and r["key"]]
-    if auth:
-        d.h2("Авторы с наибольшей плотностью ошибок")
-        auth = sorted(auth, key=lambda r: -(r["density"] or 0))[:10]
-        table(d, ["Автор", "Документов", "Страниц", "На 10 стр.", "Точность, %"],
-              [[r["label"], r["docs"], r["pages"], _fmt(r["density"], 2), _fmt(r["precision"])] for r in auth],
-              [215, 70, 70, 80, 80])
-    over = [r for r in a["density"] if r.get("goal") and (r["density"] or 0) > r["goal"]]
-    if over:
-        d.h2(f"Документы выше цели ({len(over)})")
-        table(d, ["Документ", "Страниц", "На 10 стр.", "Цель"],
-              [[r["name"], r.get("pages", "—"), _fmt(r["density"], 2), _fmt(r["goal"])]
-               for r in sorted(over, key=lambda r: -(r["density"] or 0))[:20]], [330, 60, 70, 55])
-    pre = [r for r in a["preflight"] if r["docs"]]
-    if pre:
-        d.h2("Предпечатная проверка и стандарты")
-        table(d, ["Проблема", "Документов", "Случаев"], [[r["label"], r["docs"], r["items"]] for r in pre], [330, 90, 90])
-    recs = a.get("recommendations") or []
-    if recs:
-        d.h2("Рекомендации")
-        for r in recs[:8]:
-            d.para("• " + r["title"], 9, True, gap=1)
-            d.para(r["text"], 8.5, color=MUTED, gap=5)
-    link = (st.get("service_url") or "").rstrip("/")
-    if link:
-        d.para(f"Интерактивная аналитика: {link}/analytics · тренды: {link}/trends", 8, color=MUTED)
-    try:
-        d.doc.subset_fonts()                        # в файл попадают только использованные знаки шрифта
-    except Exception:  # noqa
-        pass
-    out = d.doc.tobytes(garbage=4, deflate=True)
-    d.doc.close()
-    return out
+        # отделы
+        deps = [r for r in a["by_department"] if r["docs"]]
+        if len(deps) > 1 or (deps and deps[0]["key"]):
+            d.h2("По отделам")
+            table(d, ["Отдел", "Документов", "Страниц", "На 10 стр.", "Точность, %", "25/25, %"],
+                  [[r["label"], r["docs"], r["pages"], _fmt(r["density"], 2), _fmt(r["precision"]), _fmt(r["verify_rate"])]
+                   for r in deps[:15]], [175, 70, 60, 70, 70, 70])
+        auth = [r for r in a["by_author"] if r["docs"] and r["key"]]
+        if auth:
+            d.h2("Авторы с наибольшей плотностью ошибок")
+            auth = sorted(auth, key=lambda r: -(r["density"] or 0))[:10]
+            table(d, ["Автор", "Документов", "Страниц", "На 10 стр.", "Точность, %"],
+                  [[r["label"], r["docs"], r["pages"], _fmt(r["density"], 2), _fmt(r["precision"])] for r in auth],
+                  [215, 70, 70, 80, 80])
+        over = [r for r in a["density"] if r.get("goal") and (r["density"] or 0) > r["goal"]]
+        if over:
+            d.h2(f"Документы выше цели ({len(over)})")
+            table(d, ["Документ", "Страниц", "На 10 стр.", "Цель"],
+                  [[r["name"], r.get("pages", "—"), _fmt(r["density"], 2), _fmt(r["goal"])]
+                   for r in sorted(over, key=lambda r: -(r["density"] or 0))[:20]], [330, 60, 70, 55])
+        pre = [r for r in a["preflight"] if r["docs"]]
+        if pre:
+            d.h2("Предпечатная проверка и стандарты")
+            table(d, ["Проблема", "Документов", "Случаев"], [[r["label"], r["docs"], r["items"]] for r in pre], [330, 90, 90])
+        recs = a.get("recommendations") or []
+        if recs:
+            d.h2("Рекомендации")
+            for r in recs[:8]:
+                d.para("• " + r["title"], 9, True, gap=1)
+                d.para(r["text"], 8.5, color=MUTED, gap=5)
+        link = (st.get("service_url") or "").rstrip("/")
+        if link:
+            d.para(f"Интерактивная аналитика: {link}/analytics · тренды: {link}/trends", 8, color=MUTED)
+        try:
+            d.doc.subset_fonts()                        # в файл попадают только использованные знаки шрифта
+        except Exception:  # noqa
+            pass
+        try:
+            return d.doc.tobytes(garbage=4, deflate=True)
+        finally:
+            d.doc.close()
 
 
 def filename(q=None):

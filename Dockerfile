@@ -6,7 +6,7 @@ FROM python:3.12-slim
 
 ARG WITH_OCR=0
 ARG WITH_OFFICE=1
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MALLOC_ARENA_MAX=2 PYTHONFAULTHANDLER=1 \
     KORREKTOR_DATA=/data KORREKTOR_HOST=0.0.0.0 KORREKTOR_PORT=8080 KORREKTOR_LOG=INFO TZ=Europe/Moscow
 
 RUN apt-get update && apt-get install -y --no-install-recommends hunspell hunspell-ru fonts-dejavu-core fonts-liberation tzdata \

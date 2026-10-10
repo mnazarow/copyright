@@ -61,6 +61,7 @@ BACKOFF = 3.0          # первая пауза перед повтором, с
 
 # ошибки, которые не исчезнут при повторе: остальные части документа не отправляются
 FATAL = ("auth", "quota", "notfound", "config")
+TIMEOUT_CHUNKS = 2     # столько частей подряд без ответа на всех попытках (тайм-аут) — проход ИИ прекращается
 KIND_NAMES = {"network": "нет связи", "timeout": "тайм-аут", "auth": "доступ", "quota": "средства или квота",
               "notfound": "модель или адрес не найдены", "config": "настройки", "ratelimit": "перегрузка",
               "server": "сбой сервиса", "badrequest": "запрос отклонен", "context": "не помещается в контекст",
@@ -111,8 +112,16 @@ def master_prompt():
                    key=lambda f: [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", f)])   # v5.10 новее v5.7
     from .. import core
     custom = core.CUSTOM_PROMPT
-    path = custom if os.path.exists(custom) else os.path.join(PROMPT_DIR, files[-1])
-    return open(path, encoding="utf-8").read()
+    if os.path.exists(custom):
+        try:
+            with open(custom, encoding="utf-8") as fh:
+                text = fh.read()
+            if text.strip():
+                return text
+        except OSError:                                # свой промпт удалили в этот момент — встроенный
+            pass
+    with open(os.path.join(PROMPT_DIR, files[-1]), encoding="utf-8") as fh:
+        return fh.read()
 
 
 def page_text(p):
@@ -660,6 +669,16 @@ def request(st, system, user, log=None, status=None, should_stop=None, label="з
     raise AIError("сервис отклоняет запрос и после подстройки параметров", "badrequest")
 
 
+def _read_capped(resp, limit):
+    """Начало тела ответа: ошибочный «Адрес API» может отдавать огромную или бесконечную страницу."""
+    buf = b""
+    for chunk in resp.iter_bytes():
+        buf += chunk
+        if len(buf) >= limit:
+            break
+    return buf[:limit]
+
+
 def _request_once(st, system, user, log, status, should_stop, label, ctx):
     import httpx
     url = endpoint(st)
@@ -687,7 +706,7 @@ def _request_once(st, system, user, log, status, should_stop, label, ctx):
                     acc["status"] = resp.status_code
                     acc["last"] = time.time()
                     if resp.status_code != 200:
-                        raise _http_error(resp.status_code, resp.read()[:4000], resp.headers, st)
+                        raise _http_error(resp.status_code, _read_capped(resp, 4000), resp.headers, st)
                     _read_stream(st, resp, acc)
         except BaseException as e:  # noqa — разбирается в потоке задания
             acc["error"] = e
@@ -805,7 +824,9 @@ def parse_json(text):
     """→ (замечания, None) или ([], описание ошибки). Восстанавливает ответ в ```-блоке, с лишними запятыми
     и обрезанный посередине."""
     t = (text or "").strip()
-    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.M).strip()
+    # (?<!\s): поиск «\s*```» начинается только с первого пробела серии — прежнее выражение на длинной серии пробелов
+    # внутри ответа (зацикленная модель) работало квадратичное время и держало GIL: замирал весь процесс
+    t = re.sub(r"^```(?:json)?\s*|(?<!\s)\s*```$", "", t, flags=re.M).strip()
     if not t:
         return [], "пустой ответ"
     a = min([i for i in (t.find("{"), t.find("[")) if i >= 0], default=-1)
@@ -816,7 +837,7 @@ def parse_json(text):
         for fix in (cand, re.sub(r",\s*([}\]])", r"\1", cand)):
             try:
                 data = json.loads(fix)
-            except ValueError:
+            except (ValueError, RecursionError):        # RecursionError — тысячи вложенных скобок в ответе
                 continue
             if isinstance(data, list):
                 return data, None
@@ -830,7 +851,7 @@ def parse_json(text):
         try:
             data = json.loads(re.sub(r",\s*([}\]])", r"\1", closed))
             return list(data.get("findings") or []), "ответ обрезан — взяты целые замечания до места обрыва"
-        except ValueError:
+        except (ValueError, RecursionError, AttributeError, TypeError):
             pass
     return [], "ответ не удалось разобрать как JSON"
 
@@ -903,6 +924,7 @@ class _Run:
         self.fatal = None
         self.fatal_kind = None
         self.net_fail = 0
+        self.timeout_chunks = 0                      # части подряд, не получившие ответа ни с одной попытки
         self.last_err = None
         mins = float(st.get("ai_total_timeout") or 0)
         self.deadline = time.time() + mins * 60 if mins > 0 else None
@@ -994,8 +1016,19 @@ def _chunk(r, system, pages, idx, label, depth=0):
             if not e.retry or attempt == retries:
                 with r.lock:
                     r.report["failed"].append({"pages": rng, "reason": str(e), "kind": e.kind})
+                    if e.kind == "timeout":
+                        r.timeout_chunks += 1
+                    nt = r.timeout_chunks if e.kind == "timeout" else 0
                 log(f"ИИ ✗ {label} ({rng}): часть не проверена моделью после {attempt + 1} "
                     f"{plural(attempt + 1, 'попытки', 'попыток', 'попыток')}")
+                past_deadline = bool(r.deadline and time.time() > r.deadline)   # тогда остальное пропустит лимит
+                if nt >= TIMEOUT_CHUNKS and not past_deadline and r.set_fatal(f"модель не отвечает: {nt} части подряд — тайм-аут на всех "
+                                                        "попытках", "timeout"):
+                    # модель принимает запросы, но не отвечает (зависла, занята, не помещает запрос): раньше каждая
+                    # из десятков частей ждала все попытки — задание «висело» часами, а очередь заданий стояла
+                    log(f"ИИ ⛔ {nt} части подряд не получили ответа ни с одной попытки — модель не отвечает, "
+                        "остальные части не отправляются. Проверьте сервер модели, увеличьте «Тайм-аут ожидания "
+                        "ответа» или уменьшите «Страниц в одном запросе»")
                 return []
             wait = e.wait if e.wait is not None else min(60.0, BACKOFF * (2 ** attempt)) + random.uniform(0, BACKOFF * 0.6)
             with r.lock:
@@ -1006,6 +1039,7 @@ def _chunk(r, system, pages, idx, label, depth=0):
         u = res.get("usage") or {}
         with r.lock:
             r.net_fail = 0
+            r.timeout_chunks = 0
             r.last_err = None
             r.report["tokens_in"] += int(u.get("input_tokens") or 0)
             r.report["tokens_out"] += int(u.get("output_tokens") or 0)

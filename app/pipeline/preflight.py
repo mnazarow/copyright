@@ -105,7 +105,11 @@ def ocr_pages(pdf_path, pages, dump, log):
 
 def annotate(pdf_path, findings, out_path):
     """Копия PDF с желтой подсветкой ошибок и всплывающими примечаниями."""
-    doc = pymupdf.open(pdf_path)
+    with pymupdf.open(pdf_path) as doc:
+        return _annotate(doc, findings, out_path)
+
+
+def _annotate(doc, findings, out_path):
     placed = 0
     for i, f in enumerate(findings, 1):
         if f.get("status") == "rejected":

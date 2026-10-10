@@ -66,6 +66,7 @@ if [ $BACKUP -eq 1 ]; then
 s=sqlite3.connect(sys.argv[1], timeout=30); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()" \
        $DATA/korrektor.db $SNAPD/korrektor.db 2>>"$LOG"; then
     ( umask 077; tar cf "$TARF" --exclude=opt/$APP/venv --exclude='*/pages/*.png' --exclude=var/lib/$APP/korrektor.db \
+        --exclude=var/lib/$APP/korrektor.db-wal --exclude=var/lib/$APP/korrektor.db-shm \
         -C / var/lib/$APP etc/$APP opt/$APP 2>>"$LOG" \
       && tar rf "$TARF" --transform "s|^korrektor.db\$|var/lib/$APP/korrektor.db|" -C "$SNAPD" korrektor.db 2>>"$LOG" \
       && gzip -c "$TARF" >"$B" ) && RCB=0 || RCB=$?
@@ -109,6 +110,17 @@ if [ -f $PREFIX/scripts/install.sh ]; then
   rm -f /usr/local/bin/korrektor-passwd                       # была ссылкой и только показывала справку
   printf '#!/usr/bin/env bash\nexec /usr/local/bin/korrektor passwd "$@"\n' >/usr/local/bin/korrektor-passwd
   chmod 755 /usr/local/bin/korrektor-passwd
+fi
+# настройки службы для устойчивой работы (дополнение к unit-файлу прежних версий установщика)
+if [ $HAS_SD -eq 1 ] && [ -f /etc/systemd/system/$APP.service ]; then
+  mkdir -p /etc/systemd/system/$APP.service.d
+  cat >/etc/systemd/system/$APP.service.d/10-stability.conf <<'EOF'
+[Service]
+# задание обрабатывается отдельным процессом: если ядро завершит его из-за нехватки памяти, служба продолжает
+# работу (по умолчанию systemd останавливал бы всю службу); MALLOC_ARENA_MAX — память не «оседает» в потоках
+OOMPolicy=continue
+Environment=MALLOC_ARENA_MAX=2 PYTHONFAULTHANDLER=1
+EOF
 fi
 svc daemon-reload 2>/dev/null || true
 svc start $APP

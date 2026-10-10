@@ -284,6 +284,10 @@ WorkingDirectory=$PREFIX
 ExecStart=/bin/sh -c 'exec $PREFIX/venv/bin/uvicorn app.main:app --host \${KORREKTOR_HOST} --port \${KORREKTOR_PORT} --proxy-headers'
 Restart=on-failure
 RestartSec=3
+# задание обрабатывается отдельным процессом: если ядро завершит его из-за нехватки памяти, служба продолжает
+# работу (по умолчанию systemd останавливал бы всю службу); MALLOC_ARENA_MAX — память не «оседает» в потоках
+OOMPolicy=continue
+Environment=MALLOC_ARENA_MAX=2 PYTHONFAULTHANDLER=1
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

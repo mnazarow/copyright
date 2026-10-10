@@ -11,6 +11,7 @@ import asyncio
 import hmac
 from html import escape as html_escape
 import secrets
+import threading
 import time
 import zipfile
 import zlib
@@ -822,26 +823,32 @@ def job_page_img(jid: int, n: int):
         src = os.path.join(core.job_dir(jid), "source.pdf")    # после восстановления из копии без изображений
         if n < 1 or not os.path.exists(src):
             raise HTTPException(404)
+        tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp.png"   # уникально: страницу может рисовать и задание
         try:
             import pymupdf
-            from .pipeline.common import safe_dpi
-            with pymupdf.open(src) as d:
+            from .pipeline.common import pdf_lock, safe_dpi
+            dpi = int(core.load_settings().get("page_images_dpi") or 72)
+            with pdf_lock(), pymupdf.open(src) as d:
                 if n > d.page_count:
                     raise HTTPException(404)
                 os.makedirs(os.path.dirname(p), exist_ok=True)
-                d[n - 1].get_pixmap(dpi=safe_dpi(d[n - 1], int(core.load_settings().get("page_images_dpi") or 72))).save(p + ".tmp.png")
-                os.replace(p + ".tmp.png", p)
+                d[n - 1].get_pixmap(dpi=safe_dpi(d[n - 1], dpi)).save(tmp)
+            os.replace(tmp, p)
         except HTTPException:
             raise
+        except TimeoutError:
+            raise HTTPException(503, "Сервер занят обработкой PDF — обновите страницу через минуту")
         except Exception:  # noqa
             raise HTTPException(404)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     return FileResponse(p, media_type="image/png")
 
 
 @app.get("/job/{jid}/crop/{n}.png")
 def job_crop(jid: int, n: int, r: str = ""):
     """Фрагмент страницы (миниатюра картинки из блока «Изображения»)."""
-    import pymupdf
     import math
     try:
         x0, y0, x1, y1 = (float(v) for v in r.split(",")[:4])
@@ -852,6 +859,17 @@ def job_crop(jid: int, n: int, r: str = ""):
     src = os.path.join(core.job_dir(jid), "source.pdf")
     if not os.path.exists(src):
         raise HTTPException(404)
+    from .pipeline.common import pdf_lock
+    try:
+        with pdf_lock():
+            png = _crop_png(src, n, x0, y0, x1, y1)
+    except TimeoutError:
+        raise HTTPException(503, "Сервер занят обработкой PDF — обновите страницу через минуту")
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
+def _crop_png(src, n, x0, y0, x1, y1):
+    import pymupdf
     with pymupdf.open(src) as d:
         if not 1 <= n <= d.page_count:
             raise HTTPException(404)
@@ -860,8 +878,7 @@ def job_crop(jid: int, n: int, r: str = ""):
         if clip.is_empty or clip.width < 5 or clip.height < 5:
             raise HTTPException(400)
         zoom = min(2.0, 160.0 / max(clip.width, clip.height))
-        png = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False).tobytes("png")
-    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+        return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False).tobytes("png")
 
 
 @app.get("/job/{jid}/checks.xlsx")
@@ -1001,10 +1018,11 @@ def job_restart(request: Request, jid: int):
         try:
             for fn in os.listdir(d):
                 p = os.path.join(d, fn)
-                if not fn.startswith("source.") and os.path.isfile(p):
+                if not fn.startswith("source.") and fn != core.STATE_LOCK and os.path.isfile(p):
                     os.remove(p)
         finally:
-            core.update_job(jid, status="queued", progress=0, step="В очереди", error="")
+            core.CANCEL.discard(jid)                 # прежнее «Остановить» не относится к новой проверке
+            core.update_job(jid, status="queued", progress=0, step="В очереди", error="", attempts=0)
     workflow.reset(request, jid, "документ проверен заново")
     analytics.decisions_changed()                      # решения этого задания больше не участвуют в обучении
     core.kick()
@@ -1013,7 +1031,9 @@ def job_restart(request: Request, jid: int):
 
 # ------------------------------------------------------------------ API заданий
 @app.get("/api/health")
-def health():
+async def health():
+    """Без обращения к диску и базе и без пула потоков: проверка состояния (Docker HEALTHCHECK, обновление)
+    отвечает, даже когда все потоки пула заняты долгими запросами."""
     return {"status": "ok", "version": core.VERSION}
 
 
@@ -1292,7 +1312,6 @@ async def api_bulk(request: Request):
     users.audit(request, "bulk", ", ".join(map(str, done)), {"status": status, "changed": sum(done.values())})
     if done and body.get("rebuild", True) is not False:
         # отчеты пересобираются в фоне: сотни документов не держат запрос дольше таймаута nginx
-        import threading
         threading.Thread(target=_rebuild_many, args=(list(done),), daemon=True).start()
     return {"ok": True, "changed": done, "rebuilding": bool(done)}
 
@@ -1461,7 +1480,10 @@ async def settings_prompt(request: Request, file: UploadFile = File(None), reset
             raise HTTPException(400, "Мастер-промпт должен быть текстовым файлом в кодировке UTF-8 (.md)")
         if "МАСТЕР-ПРОМПТ" not in text[:300]:
             raise HTTPException(400, "Файл не похож на мастер-промпт: в первой строке нет «МАСТЕР-ПРОМПТ»")
-        open(custom, "w", encoding="utf-8").write(text)
+        tmp = f"{custom}.{os.getpid()}.tmp"            # задание, начатое в этот момент, не прочитает половину файла
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, custom)
     users.audit(request, "prompt", "сброс" if reset else (file.filename if file is not None else ""))
     return RedirectResponse("/settings?saved=1#ai", status_code=303)
 
@@ -1472,12 +1494,21 @@ def prompt_download():
     return FileResponse(info["path"], filename=info["name"])
 
 
+_test_ai_lock = threading.Lock()
+
+
 @app.post("/settings/test-ai")
 def test_ai(full: int = 0):
-    """Проверка связи с моделью; full=1 — с настоящим мастер-промптом (время чтения промпта, контекст, формат)."""
+    """Проверка связи с моделью; full=1 — с настоящим мастер-промптом (время чтения промпта, контекст, формат).
+    Одновременно — одна проверка: повторные нажатия, пока модель занята, не занимают потоки сервиса."""
     from .pipeline import llm
-    st = core.load_settings()
-    ok, lines = llm.diagnose(st, bool(full))
+    if not _test_ai_lock.acquire(blocking=False):
+        return {"ok": False, "error": "Проверка связи уже выполняется — дождитесь ее результата"}
+    try:
+        st = core.load_settings()
+        ok, lines = llm.diagnose(st, bool(full))
+    finally:
+        _test_ai_lock.release()
     text = "\n".join(lines)[:3000]
     return {"ok": True, "answer": text} if ok else {"ok": False, "error": text}
 

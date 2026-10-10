@@ -94,9 +94,8 @@ def learned_rejections(threshold, exclude_job=None):
     with core.db() as c:
         done = c.execute("SELECT COUNT(*) FROM jobs WHERE status='done'").fetchone()[0]
     ck = (DECISION_EPOCH[0], threshold, done)
-    if ck in _learn_cache:
-        res = _learn_cache[ck]
-    else:
+    res = _learn_cache.get(ck)                       # .get: другой поток может очистить кэш между проверкой и чтением
+    if res is None:
         acc, rej = collections.Counter(), collections.defaultdict(set)
         for s in all_stats():
             for x in s["findings"]:
@@ -121,8 +120,10 @@ def rule_info(rule):
 # ------------------------------------------------------------------ сводка одного задания
 def family_of(name):
     """Семейство документа: имя без номеров версий, дат и служебных слов — версии одного каталога."""
-    s = (name or "").lower().replace("_", " ").replace(".", " ")
-    s = re.sub(r"\b(v|в|вер|версия|ver|rev|ред|редакция)\s*\d+(\s*\d+)*\b", " ", s)
+    s = (name or "")[:200].lower().replace("_", " ").replace(".", " ")
+    # «\d+(\s*\d+)*» перебирал все разбиения длинной цепочки цифр: имя файла вроде «прайс ред 2024100912345678901234x»
+    # занимало процесс на минуты и часы (регулярное выражение держит GIL — замирал весь сервис, вместе с /api/health)
+    s = re.sub(r"\b(v|в|вер|версия|ver|rev|ред|редакция)\s*\d+(?:\s+\d+)*\b", " ", s)
     s = re.sub(r"\(\d+\)|\b\d{1,2}[ .-]\d{1,2}[ .-]\d{2,4}\b|\b20\d\d\b|\bfinal\b|\bитог\w*|\bисправл\w*|\bновая\b|\bкопия\b", " ", s)
     s = re.sub(r"\bстраницы\b", " ", s)
     return re.sub(r"\s+", " ", s).strip(" -") or (name or "").lower()

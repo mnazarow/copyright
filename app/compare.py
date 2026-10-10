@@ -160,22 +160,25 @@ def page_diff_png(a, b, page, side, dpi=110):
     pb = os.path.join(core.job_dir(b), "source.pdf")
     if not (os.path.exists(pa) and os.path.exists(pb)):
         return None
-    da, db = pymupdf.open(pa), pymupdf.open(pb)
-    if page < 1 or (side == "a" and page > da.page_count) or (side == "b" and page > db.page_count):
-        return None
-    wa = da[page - 1].get_text("words") if page <= da.page_count else []
-    wb = db[page - 1].get_text("words") if page <= db.page_count else []
+    from .pipeline.common import pdf_lock
+    with pdf_lock():                                 # PyMuPDF — по одному потоку (см. PDF_LOCK)
+        with pymupdf.open(pa) as da, pymupdf.open(pb) as db:
+            if page < 1 or (side == "a" and page > da.page_count) or (side == "b" and page > db.page_count):
+                return None
+            wa = da[page - 1].get_text("words") if page <= da.page_count else []
+            wb = db[page - 1].get_text("words") if page <= db.page_count else []
     ta, tb = [w[4] for w in wa], [w[4] for w in wb]
-    sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+    sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)       # сравнение — без блокировки PDF
     removed, added = [], []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op in ("delete", "replace"):
             removed += wa[i1:i2]
         if op in ("insert", "replace"):
             added += wb[j1:j2]
-    doc, words, color = (da, removed, (0.82, 0.23, 0.23)) if side == "a" else (db, added, (0.05, 0.64, 0.05))
-    pg = doc[page - 1]
-    for w in words:
-        r = pymupdf.Rect(w[:4]) + (-1, -1, 1, 1)
-        pg.draw_rect(r, color=color, width=1.4, fill=color, fill_opacity=0.18, overlay=True)
-    return pg.get_pixmap(dpi=safe_dpi(pg, dpi)).tobytes("png"), len(words)
+    path, words, color = (pa, removed, (0.82, 0.23, 0.23)) if side == "a" else (pb, added, (0.05, 0.64, 0.05))
+    with pdf_lock(), pymupdf.open(path) as doc:
+        pg = doc[page - 1]
+        for w in words:
+            r = pymupdf.Rect(w[:4]) + (-1, -1, 1, 1)
+            pg.draw_rect(r, color=color, width=1.4, fill=color, fill_opacity=0.18, overlay=True)
+        return pg.get_pixmap(dpi=safe_dpi(pg, dpi)).tobytes("png"), len(words)
