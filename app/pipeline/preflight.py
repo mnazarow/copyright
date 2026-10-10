@@ -8,7 +8,21 @@ from .common import safe_dpi
 
 
 def preflight(pdf_path, st, dump):
-    doc = pymupdf.open(pdf_path)
+    with pymupdf.open(pdf_path) as doc:
+        return _preflight(doc, st, dump)
+
+
+def _image_boxes(page):
+    """Положение и размер (в пикселях) всех картинок страницы за один проход. page.get_image_rects(xref) на каждую
+    картинку распаковывал ее целиком и пересчитывал отпечатки всех картинок страницы — на каталоге с крупными
+    фотографиями это сотни мегабайт и минуты на страницу."""
+    try:
+        return [(pymupdf.Rect(i["bbox"]), i.get("width") or 0, i.get("height") or 0) for i in page.get_image_info()]
+    except Exception:  # noqa
+        return []
+
+
+def _preflight(doc, st, dump):
     res = {"fonts_not_embedded": [], "low_dpi": [], "page_sizes": {}, "scans": [], "empty": dump.get("empty_pages", []),
            "placeholders": sorted({r["page"] for r in dump.get("placeholders", [])}), "items": [], "curves": []}
     sizes = Counter()
@@ -24,13 +38,10 @@ def preflight(pdf_path, st, dump):
                     fonts.setdefault(name, []).append(pno)
         txt = page.get_text().strip()
         imgs = page.get_images(full=True)
+        boxes = _image_boxes(page) if imgs and ((len(txt) < 20) or min_dpi) else []
         if len(txt) < 20 and imgs:
             area = page.rect.width * page.rect.height
-            big = False
-            for im in imgs:
-                for r in page.get_image_rects(im[0]):
-                    if r.width * r.height > area * 0.6:
-                        big = True
+            big = any(r.width * r.height > area * 0.6 for r, _, _ in boxes)
             if big and len(txt) < 5:
                 res["scans"].append(pno)          # без текста: иллюстрация или скан — уточняет OCR
         if len(txt) < 5 and not imgs:
@@ -42,14 +53,12 @@ def preflight(pdf_path, st, dump):
             except Exception:  # noqa
                 pass
         if min_dpi:
-            for im in imgs:
-                xref, iw, ih = im[0], im[2], im[3]
-                for r in page.get_image_rects(xref):
-                    if r.width < 30 or r.height < 30:
-                        continue
-                    dpi = min(iw / (r.width / 72), ih / (r.height / 72))
-                    if dpi < min_dpi:
-                        res["low_dpi"].append({"page": pno, "dpi": int(dpi), "px": f"{iw}×{ih}"})
+            for r, iw, ih in boxes:
+                if r.width < 30 or r.height < 30 or not iw or not ih:
+                    continue
+                dpi = min(iw / (r.width / 72), ih / (r.height / 72))
+                if dpi < min_dpi:
+                    res["low_dpi"].append({"page": pno, "dpi": int(dpi), "px": f"{iw}×{ih}"})
     res["fonts_not_embedded"] = [{"font": k, "pages": sorted(set(v))[:20]} for k, v in fonts.items()]
     res["page_sizes"] = {f"{w}×{h} мм": n for (w, h), n in sizes.most_common()}
     # сводка строками
@@ -74,11 +83,20 @@ def ocr_pages(pdf_path, pages, dump, log):
     """Распознает страницы-сканы Tesseract и добавляет их строки в dump."""
     if not pages:
         return []
-    doc = pymupdf.open(pdf_path)
+    with pymupdf.open(pdf_path) as doc:
+        return _ocr_pages(doc, pages, dump, log)
+
+
+def _ocr_pages(doc, pages, dump, log):
     done = []
     for pno in pages:
         try:
-            tp = doc[pno - 1].get_textpage_ocr(language="rus+eng", dpi=safe_dpi(doc[pno - 1], 300), full=True)
+            dpi = safe_dpi(doc[pno - 1], 300)
+        except ValueError as e:                        # страница огромного размера — пропускается, остальные — нет
+            log(f"OCR: стр. {pno} пропущена ({e})")
+            continue
+        try:
+            tp = doc[pno - 1].get_textpage_ocr(language="rus+eng", dpi=dpi, full=True)
             d = doc[pno - 1].get_text("dict", textpage=tp)
         except Exception as e:  # noqa
             log(f"OCR недоступен ({e}); страницы-сканы не распознаны")
@@ -103,6 +121,11 @@ def ocr_pages(pdf_path, pages, dump, log):
     return done
 
 
+# флаги текстового слоя, с которыми page.search_for ищет сам (переносы склеиваются, пробелы сохраняются)
+SEARCH_FLAGS = (pymupdf.TEXT_DEHYPHENATE | pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_PRESERVE_LIGATURES
+                | pymupdf.TEXT_MEDIABOX_CLIP)
+
+
 def annotate(pdf_path, findings, out_path):
     """Копия PDF с желтой подсветкой ошибок и всплывающими примечаниями."""
     with pymupdf.open(pdf_path) as doc:
@@ -111,12 +134,16 @@ def annotate(pdf_path, findings, out_path):
 
 def _annotate(doc, findings, out_path):
     placed = 0
-    for i, f in enumerate(findings, 1):
+    cur = {"no": None, "page": None, "tp": None}      # текстовый слой — один на страницу и только текущей страницы
+    for i, f in enumerate(findings, 1):               # (замечания отсортированы по страницам)
         if f.get("status") == "rejected":
             continue
-        page = doc[f["page"] - 1] if 0 < f["page"] <= doc.page_count else None
-        if page is None:
+        if not 0 < f["page"] <= doc.page_count:
             continue
+        if cur["no"] != f["page"]:
+            pg = doc[f["page"] - 1]
+            cur.update(no=f["page"], page=pg, tp=pg.get_textpage(flags=SEARCH_FLAGS))
+        page, tp = cur["page"], cur["tp"]
         needles = []
         for part in [p.strip() for p in str(f.get("bad", "")).split(" … ")]:
             if part and part not in {"—", "-", "–"}:
@@ -124,9 +151,9 @@ def _annotate(doc, findings, out_path):
         needles.append(f["src"])
         rects = []
         for nd in needles:
-            rects = page.search_for(nd.replace(" ", " "), quads=False)
+            rects = page.search_for(nd.replace("\xa0", " "), quads=False, textpage=tp)
             if not rects and len(nd) > 40:
-                rects = page.search_for(nd[:40])
+                rects = page.search_for(nd[:40], textpage=tp)
             if rects:
                 break
         text = (f"№ {i}. {f['type']}\nКак правильно: {f['fix']}\n{f['note']}").replace(" ", " ")

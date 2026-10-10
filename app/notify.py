@@ -252,19 +252,42 @@ def send_digest(st):
                     _html(text, link(st, "/trends"), "Открыть тренды"), payload)
 
 
+def _read_mark(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _write_mark(path, value):
+    """Отметка «уже отправлено». Ошибка записи (диск переполнен) прежде терялась при закрытии файла — и рассылка
+    повторялась каждые 10 минут; теперь она видна в журнале, а повтор сдерживает отметка в памяти."""
+    try:
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(value)
+        os.replace(tmp, path)
+    except OSError:
+        core.log.exception("отметка %s не записана", os.path.basename(path))
+
+
 def digest_loop():
     mark = os.path.join(core.DATA, ".digest_sent")
+    done, retry_at = None, 0.0                       # в памяти: не повторять отправленное, ошибки — не чаще раза в час
     while True:
         try:
             st = core.load_settings()
             now = dt.datetime.now()
             week = now.strftime("%G-%V")
-            last = open(mark).read().strip() if os.path.exists(mark) else ""
+            last = _read_mark(mark)
             day, hour = int(st.get("digest_weekday") or 0), int(st.get("digest_hour", 9) or 0)
             due = now.weekday() > day or (now.weekday() == day and now.hour >= hour)   # пропущенный день — догоняем
-            if st.get("digest_enabled") and due and last != week:
+            if st.get("digest_enabled") and due and last != week and done != week and time.time() >= retry_at:
+                retry_at = time.time() + 3600
                 send_digest(st)
-                open(mark, "w").write(week)
+                done = week
+                _write_mark(mark, week)
         except Exception:  # noqa
             core.log.exception("еженедельная сводка")
         time.sleep(600)
@@ -362,14 +385,18 @@ def send_reminders(st, force=False, only=None):
 
 def remind_loop():
     mark = os.path.join(core.DATA, ".remind_day")
+    tries = {}                                       # попыток за день: сбой — повтор через 10 минут, но не больше трех
     while True:
         try:
             st = core.load_settings()
             now = dt.datetime.now()
-            last = open(mark).read().strip() if os.path.exists(mark) else ""
-            if st.get("remind_enabled") and now.hour >= int(st.get("remind_hour", 10) or 0) and last != now.date().isoformat():
+            today = now.date().isoformat()
+            if st.get("remind_enabled") and now.hour >= int(st.get("remind_hour", 10) or 0) \
+                    and _read_mark(mark) != today and tries.get(today, 0) < 3:
+                tries = {today: tries.get(today, 0) + 1}
                 send_reminders(st)
-                open(mark, "w").write(now.date().isoformat())
+                tries[today] = 3                     # отправлено — сегодня больше не повторять
+                _write_mark(mark, today)
         except Exception:  # noqa
             core.log.exception("напоминания")
         time.sleep(600)

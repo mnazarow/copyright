@@ -69,6 +69,11 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     faulthandler.enable()                            # при аварии библиотеки — стек всех потоков в журнал службы
+    try:                                             # при нехватке памяти ядро завершит процесс задания, а не веб-сервер
+        with open("/proc/self/oom_score_adj", "w") as fh:          # (наследуют и extract.py, LibreOffice)
+            fh.write("500")
+    except OSError:
+        pass
     signal.signal(signal.SIGTERM, _interrupted)
     _watch_parent()
     from . import core

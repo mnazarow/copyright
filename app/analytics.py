@@ -11,6 +11,7 @@ import math
 import os
 import re
 import statistics
+import threading
 
 from . import core
 from .pipeline.common import AUTHOR, TYPES
@@ -75,10 +76,12 @@ PREFLIGHT = [("fonts", "Шрифты не встроены"), ("low_dpi", "Из�
 
 _learn_cache = {}
 DECISION_EPOCH = [0]          # увеличивается при каждом решении корректора (✓ ✕, массовая отметка, удаление задания)
+_epoch_lock = threading.Lock()
 
 
 def decisions_changed():
-    DECISION_EPOCH[0] += 1
+    with _epoch_lock:                                # «+=» из нескольких потоков терял увеличения
+        DECISION_EPOCH[0] += 1
 
 
 def learn_key(rule, bad):
@@ -163,15 +166,66 @@ def _stats_from_state(state):
     }
 
 
+_stats_mem = collections.OrderedDict()   # номер задания → (ключ свежести, сводка): не читать диск на каждый запрос
+_stats_mem_lock = threading.Lock()
+_stats_mem_size = [0]                    # замечаний в кеше (≈1 КБ памяти каждое)
+STATS_MEM_MAX = 200_000                  # больше — самые давно использованные сводки вытесняются (читаются с диска)
+
+
+def _cache_put(jid, key, st):
+    if os.environ.get("KORREKTOR_PARENT_PID"):   # процесс задания: живет недолго, кеш не нужен
+        return
+    n = len(st.get("findings") or ())
+    with _stats_mem_lock:
+        old = _stats_mem.pop(jid, None)
+        if old:
+            _stats_mem_size[0] -= len(old[1].get("findings") or ())
+        _stats_mem[jid] = (key, st)
+        _stats_mem_size[0] += n
+        while _stats_mem_size[0] > STATS_MEM_MAX and len(_stats_mem) > 1:
+            _, (_, ev) = _stats_mem.popitem(last=False)
+            _stats_mem_size[0] -= len(ev.get("findings") or ())
+
+
+def _cache_drop(jid):
+    old = _stats_mem.pop(jid, None)
+    if old:
+        _stats_mem_size[0] -= len(old[1].get("findings") or ())
+_JOB_KEYS = ("name", "batch", "created", "started", "finished", "author", "department", "owner", "doc_type")
+
+
+def _mtime(p):
+    try:
+        return os.path.getmtime(p)
+    except OSError:
+        return None
+
+
 def job_stats(job):
-    """Сводка задания с кешем stats.json. None — если задание не завершено."""
+    """Сводка задания (кеш в памяти и в stats.json). None — если задание не завершено. Возвращается копия
+    верхнего уровня; списки замечаний общие с кешем — их не изменять."""
     if job.get("status") != "done":
         return None
     d = core.job_dir(job["id"])
-    sp = os.path.join(d, "state.json")
-    if not os.path.exists(sp):
+    mt = _mtime(os.path.join(d, "state.json"))
+    if mt is None:
         return None
-    mt = os.path.getmtime(sp)
+    key = (mt, _mtime(os.path.join(d, "timing.json"))) + tuple(job.get(k) for k in _JOB_KEYS)
+    with _stats_mem_lock:
+        hit = _stats_mem.get(job["id"])
+        if hit and hit[0] == key:
+            _stats_mem.move_to_end(job["id"])
+    if hit and hit[0] == key:
+        return dict(hit[1])
+    st = _job_stats_disk(job, d, mt)
+    if st is not None:
+        _cache_put(job["id"], key, st)
+        st = dict(st)
+    return st
+
+
+def _job_stats_disk(job, d, mt):
+    sp = os.path.join(d, "state.json")
     cp = os.path.join(d, "stats.json")
     st = None
     if os.path.exists(cp):
@@ -183,7 +237,8 @@ def job_stats(job):
             st = None
     if st is None:
         try:
-            state = json.load(open(sp, encoding="utf-8"))
+            with open(sp, encoding="utf-8") as fh:
+                state = json.load(fh)
         except Exception:  # noqa
             return None
         st = _stats_from_state(state)
@@ -216,12 +271,32 @@ def job_stats(job):
 
 def all_stats():
     out = []
+    ids = set()
     for j in core.list_jobs(100000):
+        ids.add(j["id"])
         s = job_stats(j)
         if s:
             out.append(s)
+    with _stats_mem_lock:                            # удаленные задания — из кеша
+        for jid in [k for k in _stats_mem if k not in ids]:
+            _cache_drop(jid)
     out.sort(key=lambda s: (s["created"], s["id"]))
     return out
+
+
+# расчеты по всем документам: одновременно не больше двух — быстрые смены фильтров на странице аналитики
+# не запускают десятки одинаковых расчетов, занимающих процессор и память
+_compute = threading.BoundedSemaphore(2)
+
+
+def _limited(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def wrap(*a, **kw):
+        with _compute:
+            return fn(*a, **kw)
+    return wrap
 
 
 def failed_jobs(date_from=None, date_to=None, owner=None):
@@ -349,6 +424,7 @@ def metrics(docs, f=None):
     }
 
 
+@_limited
 def analytics(q):
     f = parse_filters(q)
     stats = all_stats()
@@ -650,12 +726,13 @@ def options(stats):
 
 
 # ------------------------------------------------------------------ обозреватель замечаний
+@_limited
 def explore(q, limit=200, offset=0):
     f = parse_filters(q)
     text = (q.get("text") or "").strip().lower()
     word = (q.get("bad") or "").strip().lower()
     docs = filter_docs(all_stats(), f)
-    rows = []
+    rows, total = [], 0
     for s in reversed(docs):
         for x in s["findings"]:
             if not finding_ok(x, f):
@@ -664,9 +741,11 @@ def explore(q, limit=200, offset=0):
                 continue
             if text and text not in (x["bad"] + " " + x["good"]).lower():
                 continue
-            rows.append(dict(x, job=s["id"], name=s["name"], created=s["created"][:10],
-                             rule_label=rule_info(x["rule"])["label"], source_label=SOURCES.get(x["source"], "")))
-    return {"total": len(rows), "rows": rows[offset:offset + limit], "offset": offset, "limit": limit}
+            if offset <= total < offset + limit:     # строки собираются только для запрошенной страницы
+                rows.append(dict(x, job=s["id"], name=s["name"], created=s["created"][:10],
+                                 rule_label=rule_info(x["rule"])["label"], source_label=SOURCES.get(x["source"], "")))
+            total += 1
+    return {"total": total, "rows": rows, "offset": offset, "limit": limit}
 
 
 # ------------------------------------------------------------------ тренды
@@ -741,6 +820,7 @@ def compare(cur, prev):
     return out
 
 
+@_limited
 def trends(q):
     f = parse_filters(dict(q, period=q.get("period") or "180"))
     gran = q.get("gran") if q.get("gran") in ("day", "week", "month") else "week"

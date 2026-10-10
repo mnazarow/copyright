@@ -14,6 +14,7 @@ import re
 from collections import Counter
 
 from . import core
+from .pipeline.common import PairCache
 from .pipeline.products import TOKEN, norm as anorm
 
 UNITS = [  # (класс, регулярное выражение единицы; русские и английские написания)
@@ -29,9 +30,14 @@ NUM_RU = r"\d{1,3}(?:[   ]\d{3})+(?:,\d+)?|\d+(?:,\d+)?"
 NUM_EN = r"\d{1,3}(?:[,\u00a0\u202f ]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
 
 
+_CYR, _LAT = re.compile(r"[А-Яа-яЁё]"), re.compile(r"[A-Za-z]")
+
+
 def lang_of(text):
-    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
-    lat = len(re.findall(r"[A-Za-z]", text))
+    """Язык по первым 200 тыс. знаков; буквы считаются без списка всех совпадений (сотни МБ на каталоге)."""
+    text = text[:200000]
+    cyr = sum(1 for _ in _CYR.finditer(text))
+    lat = sum(1 for _ in _LAT.finditer(text))
     return "ru" if cyr >= lat else "en"
 
 
@@ -96,7 +102,8 @@ def _pages(jid):
     p = os.path.join(core.job_dir(jid), "dump.json")
     if not os.path.exists(p):
         return None
-    dump = json.load(open(p, encoding="utf-8"))
+    with open(p, encoding="utf-8") as fh:
+        dump = json.load(fh)
     return [" ".join(ln["text"] for ln in pg.get("lines", [])) for pg in dump.get("lines", [])]
 
 
@@ -113,8 +120,19 @@ def diff(ca, cb):
     return sorted(only_a.elements(), key=str), sorted(only_b.elements(), key=str)
 
 
+_cache = PairCache()
+
+
 def compare(a, b):
     ja, jb = core.get_job(a), core.get_job(b)
+    if not (ja and jb):
+        return None
+    key = ("lang", a, b, PairCache.stamp(core.job_dir(a), ("dump.json",)), PairCache.stamp(core.job_dir(b), ("dump.json",)),
+           ja.get("name"), jb.get("name"))
+    return _cache.get(key, lambda: _compare(a, b, ja, jb))
+
+
+def _compare(a, b, ja, jb):
     pa, pb = _pages(a), _pages(b)
     if not (ja and jb and pa is not None and pb is not None):
         return None

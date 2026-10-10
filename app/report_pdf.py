@@ -207,8 +207,8 @@ def build(q, title_extra=""):
     t = analytics.trends(dict(tq, gran=gran))
     k, cmp_, g = a["kpi"], t.get("compare") or {}, a["goals"]
     st = core.load_settings()
-    from .pipeline.common import PDF_LOCK
-    with PDF_LOCK:                                  # PyMuPDF — по одному потоку (см. PDF_LOCK)
+    from .pipeline.common import pdf_lock
+    with pdf_lock(None):                                  # PyMuPDF — по одному потоку (см. PDF_LOCK)
         d = Doc()
         d.new_page()
         p = d.page
@@ -347,17 +347,20 @@ def send(st, force=False):
 
 
 def loop():
+    from .notify import _read_mark, _write_mark
     mark = os.path.join(core.DATA, ".mgmt_report_sent")
+    sent, failures = None, {}                        # в памяти: отправленный период и число неудачных попыток
     while True:
         try:
             st = core.load_settings()
-            last = open(mark).read().strip() if os.path.exists(mark) else ""
-            key = due(st, dt.datetime.now(), last)
-            if key:
+            key = due(st, dt.datetime.now(), _read_mark(mark))
+            if key and key != sent and failures.get(key, 0) < 6:
                 r = send(st)
                 if r == "ok":
-                    open(mark, "w").write(key)
-                else:                                   # повторная попытка — через час
+                    sent = key
+                    _write_mark(mark, key)
+                else:                                   # повторная попытка — через час, не больше шести за период
+                    failures[key] = failures.get(key, 0) + 1
                     core.log.warning("отчет для руководства: %s", r)
                     time.sleep(2700)
         except Exception:  # noqa

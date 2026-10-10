@@ -332,17 +332,29 @@ async def job_bitrix(request: Request, jid: int):
 async def _products_from_request(request):
     from .pipeline import products
     ctype = request.headers.get("content-type", "")
+    limit = 50 * 1024 * 1024
     if ctype.startswith("multipart/"):
         form = await request.form()
         f = form.get("file")
         if not f or not getattr(f, "filename", ""):
             raise ValueError("выберите файл CSV или XLSX")
-        data, name = await f.read(), f.filename
-    else:                                              # REST API: тело запроса — CSV, имя — в ?name=
-        if int(request.headers.get("content-length") or 0) > 50 * 1024 * 1024:
+        if getattr(f, "size", None) and f.size > limit:
             raise ValueError("файл больше 50 МБ")
-        data, name = await request.body(), request.query_params.get("name") or "products.csv"
-    if len(data) > 50 * 1024 * 1024:
+        data, name = await f.read(limit + 1), f.filename      # не больше лимита в память
+    else:                                              # REST API: тело запроса — CSV, имя — в ?name=
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            declared = 0
+        if declared > limit:
+            raise ValueError("файл больше 50 МБ")
+        buf = bytearray()
+        async for chunk in request.stream():           # без Content-Length (chunked) — тоже не больше лимита
+            buf += chunk
+            if len(buf) > limit:
+                raise ValueError("файл больше 50 МБ")
+        data, name = bytes(buf), request.query_params.get("name") or "products.csv"
+    if len(data) > limit:
         raise ValueError("файл больше 50 МБ")
     return await run_in_threadpool(products.save, data, name, products.PATH())
 

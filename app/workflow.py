@@ -13,6 +13,7 @@
 от согласования.
 """
 import datetime as dt
+import threading
 
 from . import core, users
 
@@ -162,10 +163,16 @@ def act(request, jid, action, comment=""):
             c.execute("INSERT INTO job_events(job, ts, user, action, state_from, state_to, comment) VALUES(?,?,?,?,?,?,?)",
                       (jid, now, (user or {}).get("login", ""), action, job.get("wf_state") or "", dst, comment))
     users.audit(request, "workflow", jid, {"action": label, "to": STATES[dst], "comment": comment[:300]})
-    try:
-        _notify(st, core.get_job(jid), action, dst, user or {}, comment)
-    except Exception:  # noqa — уведомление не должно мешать переходу
-        core.log.exception("уведомление о согласовании %s", jid)
+    job_now = core.get_job(jid)
+
+    def send():
+        try:
+            _notify(st, job_now, action, dst, user or {}, comment)
+        except Exception:  # noqa — уведомление не должно мешать переходу
+            core.log.exception("уведомление о согласовании %s", jid)
+    # почта, Telegram, вебхук и Битрикс24 — в фоне: при недоступном сервере (до 20 с на каждый канал) кнопка
+    # согласования не ждала бы минуту, занимая поток веб-сервера
+    threading.Thread(target=send, daemon=True, name=f"wf-notify-{jid}").start()
     return dst
 
 

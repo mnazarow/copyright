@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Пакет документов: сравнение версий (п. 3.8) и сверка реквизитов между документами (п. 5.15)."""
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -16,17 +17,38 @@ ADDR = re.compile(r"(ул\.|пр-т|пр-кт|проспект|пер\.|ш\.|н�
 
 def load_dump(jid):
     p = os.path.join(core.job_dir(jid), "dump.json")
-    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+    if not os.path.exists(p):
+        return None
+    with open(p, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _page_hash(p):
+    return hashlib.sha1(" ".join(ln["text"] for ln in p["lines"]).encode("utf-8", "surrogatepass")).digest()
 
 
 def analyze(jobs, st):
-    docs = {j["id"]: (j, load_dump(j["id"])) for j in jobs if j["status"] == "done"}
-    docs = {k: v for k, v in docs.items() if v[1]}
+    """Документы пакета разбираются по одному: в памяти — отпечатки страниц и найденные реквизиты, а не тексты
+    всех документов сразу (пакет до 200 каталогов занимал гигабайты)."""
+    compare, requisites = st.get("batch_compare", True), st.get("batch_requisites", True)
+    docs = {}                                          # номер → (задание, отпечатки страниц)
+    seen = {}
+    for j in jobs:
+        if j["status"] != "done":
+            continue
+        d = load_dump(j["id"])
+        if not d:
+            continue
+        k = j["id"]
+        docs[k] = (j, [_page_hash(p) for p in d["lines"]] if compare else [])
+        if requisites:
+            _collect_requisites(k, d, seen)
+        del d
     res = {"groups": [], "requisites": []}
     # версии
-    if st.get("batch_compare", True):
+    if compare:
         thr = int(st.get("batch_similarity") or 50) / 100
-        texts = {k: [" ".join(ln["text"] for ln in p["lines"]) for p in d["lines"]] for k, (j, d) in docs.items()}
+        texts = {k: h for k, (j, h) in docs.items()}
         used = set()
         for a in docs:
             if a in used:
@@ -38,11 +60,11 @@ def analyze(jobs, st):
                     g.append(b)
             if len(g) > 1:
                 used |= set(g)
-                base = docs[a][1]["lines"]
+                base = (load_dump(a) or {}).get("lines") or []
                 diffs = []
                 for b in g[1:]:
                     pages = []
-                    for pa, pb in zip(base, docs[b][1]["lines"]):
+                    for pa, pb in zip(base, (load_dump(b) or {}).get("lines") or []):
                         la = [ln["text"] for ln in pa["lines"]] + pa["head"] + pa["foot"]
                         lb = [ln["text"] for ln in pb["lines"]] + pb["head"] + pb["foot"]
                         if la != lb:
@@ -52,17 +74,7 @@ def analyze(jobs, st):
                     diffs.append({"job": b, "name": docs[b][0]["name"], "pages": pages})
                 res["groups"].append({"base": a, "base_name": docs[a][0]["name"], "others": diffs})
     # реквизиты
-    if st.get("batch_requisites", True):
-        seen = {}
-        for k, (j, d) in docs.items():
-            for p in d["lines"]:
-                lines = [ln["text"].strip() for ln in p["lines"]]
-                for i, t in enumerate(lines):
-                    for m in list(PHONE.finditer(t)) + list(MAIL.finditer(t)):
-                        key = re.sub(r"[\s()-]", "", m.group(0)).lower()
-                        addr = nearest_address(lines, i) or ""
-                        if addr:
-                            seen.setdefault(key, {}).setdefault(k, {})[addr] = p["pdf_page"]
+    if requisites:
         for key, per in seen.items():
             if len(per) < 2:
                 continue
@@ -76,6 +88,17 @@ def analyze(jobs, st):
                         res["requisites"].append({"job": k, "name": docs[k][0]["name"], "page": pg, "key": key,
                                                   "address": a, "others": alt[:3], "docs": where[:6]})
     return res
+
+
+def _collect_requisites(k, d, seen):
+    for p in d["lines"]:
+        lines = [ln["text"].strip() for ln in p["lines"]]
+        for i, t in enumerate(lines):
+            for m in list(PHONE.finditer(t)) + list(MAIL.finditer(t)):
+                key = re.sub(r"[\s()-]", "", m.group(0)).lower()
+                addr = nearest_address(lines, i) or ""
+                if addr:
+                    seen.setdefault(key, {}).setdefault(k, {})[addr] = p["pdf_page"]
 
 
 def maybe_finish(batch):

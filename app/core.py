@@ -425,6 +425,30 @@ def load_state(jid):
         return None
 
 
+_umask_lock = threading.Lock()
+_umask_state = {"n": 0, "old": None}
+
+
+class private_umask:
+    """Файлы только для владельца (umask 077) на время блока. umask — общий для всего процесса: прежде два потока
+    (резервная копия и ключ второго фактора) могли «перепутать» восстановление, и процесс навсегда оставался с 077.
+    Здесь счетчик: исходное значение возвращает последний вышедший из блока."""
+
+    def __enter__(self):
+        with _umask_lock:
+            if _umask_state["n"] == 0:
+                _umask_state["old"] = os.umask(0o077)
+            _umask_state["n"] += 1
+        return self
+
+    def __exit__(self, *exc):
+        with _umask_lock:
+            _umask_state["n"] -= 1
+            if _umask_state["n"] == 0:
+                os.umask(_umask_state["old"])
+        return False
+
+
 def write_json_atomic(path, data, **kw):
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"     # номера потоков разных процессов совпадают
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -847,6 +871,8 @@ def _save_timing(d, timing):
 
 
 PAUSED = threading.Event()          # пауза очереди: восстановление из резервной копии
+RESTORING = threading.Event()       # идет замена данных и базы: веб-запросы ждут (между копированием базы и миграцией
+                                    # схема может быть старой — чтение новых столбцов завершилось бы ошибкой)
 BUSY = set()                        # задания, которые обрабатываются прямо сейчас
 
 
@@ -904,6 +930,17 @@ def expired_jobs(st, now=None):
     return out
 
 
+def memory_loop():
+    """Раз в минуту — вернуть системе память, занятую рисованием страниц в веб-сервере (см. release_pdf_memory)."""
+    from .pipeline.common import release_pdf_memory
+    while True:
+        time.sleep(60)
+        try:
+            release_pdf_memory()
+        except Exception:  # noqa
+            log.exception("освобождение памяти")
+
+
 def cleanup_loop():
     while True:
         if PAUSED.is_set():                          # идет восстановление из копии — не удалять задания
@@ -944,6 +981,7 @@ def start_workers():
     for _ in range(max(1, n)):
         threading.Thread(target=worker_loop, daemon=True).start()
     threading.Thread(target=cleanup_loop, daemon=True).start()
+    threading.Thread(target=memory_loop, daemon=True, name="memory").start()
     from . import backup, notify
     threading.Thread(target=notify.digest_loop, daemon=True).start()
     threading.Thread(target=notify.remind_loop, daemon=True).start()

@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import time
 
 from . import core
 
@@ -112,6 +113,7 @@ def save(login, name="", role="author", password=None, source="local", active=1,
     if email and not EMAIL_RE.match(email):
         raise ValueError("Почта: один адрес вида имя@домен")
     u = get(login)
+    pw = hash_pw(password) if password else None      # медленный хэш — до транзакции, а не с занятой базой
     with core.db() as c:
         if u:
             c.execute("UPDATE users SET name=?, role=?, active=?, email=?, department=? WHERE login=?",
@@ -119,8 +121,8 @@ def save(login, name="", role="author", password=None, source="local", active=1,
         else:
             c.execute("INSERT INTO users(login,name,role,source,active,email,department,created) VALUES(?,?,?,?,?,?,?,?)",
                       (login, name, role, source, int(bool(active)), email, department, now()))
-        if password:
-            c.execute("UPDATE users SET pw=? WHERE login=?", (hash_pw(password), login))
+        if pw:
+            c.execute("UPDATE users SET pw=? WHERE login=?", (pw, login))
     return get(login)
 
 
@@ -198,6 +200,10 @@ def ldap_bind(login, password, st):
                         ca_certs_file=st.get("ldap_ca_file") or None)
         server = ldap3.Server(url, use_ssl=url.startswith("ldaps://"), tls=tls, get_info=ldap3.NONE, connect_timeout=8)
         conn = ldap3.Connection(server, user=dn, password=password, auto_bind=False, receive_timeout=10)
+    except Exception as e:  # noqa
+        core.log.warning("LDAP недоступен: %s", e)
+        return False, "unavailable"
+    try:                                               # соединение закрывается и при неверном пароле или ошибке
         if st.get("ldap_url", "").startswith("ldap://") and st.get("ldap_starttls"):
             conn.start_tls()
         if not conn.bind():
@@ -212,11 +218,15 @@ def ldap_bind(login, password, st):
                 info = {"name": str(e.displayName) if "displayName" in e else "",
                         "email": str(e.mail) if "mail" in e else "",
                         "department": str(e.department) if "department" in e else ""}
-        conn.unbind()
         return True, info
     except Exception as e:  # noqa
         core.log.warning("LDAP недоступен: %s", e)
         return False, "unavailable"
+    finally:
+        try:
+            conn.unbind()
+        except Exception:  # noqa
+            pass
 
 
 # ------------------------------------------------------------------ права
@@ -370,6 +380,12 @@ def audit_rows(q="", user="", action="", limit=500, offset=0):
 
 
 def cleanup_audit(days=365):
+    """Удаление старых записей журнала порциями: одна большая операция держала бы запись в базу секундами."""
     lim = (dt.datetime.now() - dt.timedelta(days=days)).isoformat()
-    with core.db() as c:
-        c.execute("DELETE FROM audit WHERE ts < ?", (lim,))
+    while True:
+        with core.db() as c:
+            n = c.execute("DELETE FROM audit WHERE rowid IN (SELECT rowid FROM audit WHERE ts < ? LIMIT 2000)",
+                          (lim,)).rowcount
+        if n < 2000:
+            break
+        time.sleep(0.05)

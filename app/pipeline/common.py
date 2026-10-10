@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Общие функции конвейера: тексты страниц, поиск цитат, нормализация."""
+import collections
 import contextlib
 import re
 import threading
+import time
 import unicodedata
 
 WS = re.compile(r"[\s ]+")
@@ -19,7 +21,110 @@ class Cancelled(Exception):
 # о возможном аварийном завершении интерпретатора. Вызовы из потоков веб-сервера (миниатюры, страницы, сравнение
 # версий, отчет для руководства, PDF с пометками при пересборке) выполняются по одному под этой блокировкой.
 # Обработка заданий идет в отдельных процессах (app.worker), у каждого — своя копия библиотеки.
-PDF_LOCK = threading.RLock()
+class FairLock:
+    """Повторно входимая блокировка «в порядке очереди». Обычная блокировка не соблюдает очередь: под нагрузкой
+    поток, только что отпустивший ее, тут же забирает ее снова, а другие ждут минутами (миниатюры получали отказ)."""
+
+    def __init__(self):
+        self._cond = threading.Condition(threading.Lock())
+        self._queue = collections.deque()
+        self._owner, self._count = None, 0
+
+    def acquire(self, blocking=True, timeout=-1):
+        me = threading.get_ident()
+        with self._cond:
+            if self._owner == me:
+                self._count += 1
+                return True
+            if not blocking and (self._owner is not None or self._queue):
+                return False
+            ticket = object()
+            self._queue.append(ticket)
+            end = None if timeout is None or timeout < 0 else time.monotonic() + timeout
+            while self._owner is not None or self._queue[0] is not ticket:
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
+                    self._queue.remove(ticket)
+                    self._cond.notify_all()
+                    return False
+                self._cond.wait(left)
+            self._queue.popleft()
+            self._owner, self._count = me, 1
+            return True
+
+    def release(self):
+        with self._cond:
+            if self._owner != threading.get_ident():
+                raise RuntimeError("блокировка PDF освобождается не владельцем")
+            self._count -= 1
+            if not self._count:
+                self._owner = None
+                self._cond.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
+PDF_LOCK = FairLock()
+_pdf_used = {"t": 0.0}
+
+
+def release_pdf_memory():
+    """Кеш MuPDF (до 256 МБ шрифтов и картинок) и освобожденная память кучи — системе. Вызывается в веб-сервере
+    раз в минуту, если страницы рисовались: иначе процесс «раздувался» от просмотра страниц и миниатюр."""
+    if not _pdf_used["t"] or not PDF_LOCK.acquire(timeout=5):
+        return False
+    try:
+        import pymupdf
+        pymupdf.TOOLS.store_shrink(100)
+        _pdf_used["t"] = 0.0
+    except Exception:  # noqa
+        pass
+    finally:
+        PDF_LOCK.release()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # noqa
+        pass
+    return True
+
+
+class PairCache:
+    """Небольшой кеш результатов сравнения двух заданий (версии, языки): страница, выгрузка и REST API считают
+    одно и то же сравнение один раз, пока не изменились файлы заданий."""
+
+    def __init__(self, size=8):
+        self.size, self.items, self.lock = size, collections.OrderedDict(), threading.Lock()
+
+    @staticmethod
+    def stamp(job_dir, files=("state.json", "dump.json")):
+        import os
+        out = []
+        for fn in files:
+            try:
+                out.append(os.path.getmtime(os.path.join(job_dir, fn)))
+            except OSError:
+                out.append(None)
+        return tuple(out)
+
+    def get(self, key, compute):
+        with self.lock:
+            if key in self.items:
+                self.items.move_to_end(key)
+                return self.items[key]
+        val = compute()
+        if val is not None:
+            with self.lock:
+                self.items[key] = val
+                while len(self.items) > self.size:
+                    self.items.popitem(last=False)
+        return val
 
 
 @contextlib.contextmanager
@@ -31,6 +136,7 @@ def pdf_lock(timeout=60):
     try:
         yield
     finally:
+        _pdf_used["t"] = time.time()
         PDF_LOCK.release()
 
 
@@ -166,4 +272,6 @@ def safe_dpi(page, dpi):
     if w <= 0 or h <= 0:
         return dpi
     lim = (MAX_PIXELS / (w * h)) ** 0.5
-    return max(1, int(min(dpi, lim)))
+    if lim < 1:                                       # даже 1 dpi больше предела: страница в сотни метров (испорченный
+        raise ValueError(f"страница {round(w * 25.4 / 1000)}×{round(h * 25.4 / 1000)} м слишком велика для изображения")
+    return int(min(dpi, lim))                         # размер в PDF) — картинка заняла бы гигабайты памяти

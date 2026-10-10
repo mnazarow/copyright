@@ -49,6 +49,7 @@ def to_docx(src, dst, timeout=240):
 
 _running = set()                    # запущенные LibreOffice (для kill_running)
 _running_lock = threading.Lock()
+_slots = threading.BoundedSemaphore(2)   # одновременно в процессе — не больше двух LibreOffice (по сотне МБ каждый)
 
 
 def _in_job_process():
@@ -114,6 +115,11 @@ def convert(src, dst, fmt, timeout=240):
     if not exe:
         raise RuntimeError("Для проверки документов Word нужен LibreOffice: установите его "
                            "(sudo apt install libreoffice-writer-nogui) или загрузите PDF")
+    with _slots:
+        return _convert(exe, src, dst, fmt, timeout)
+
+
+def _convert(exe, src, dst, fmt, timeout):
     tmp = tempfile.mkdtemp(prefix="korrektor-office-")
     try:
         env = dict(os.environ, HOME=tmp)
@@ -133,6 +139,11 @@ def convert(src, dst, fmt, timeout=240):
         finally:
             with _running_lock:
                 _running.discard(item)
+        if own_group:                                  # обертка завершилась — оставшиеся процессы LibreOffice тоже
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         out = glob.glob(os.path.join(tmp, "*." + fmt))
         if p.returncode or not out:
             raise RuntimeError(f"LibreOffice не смог преобразовать документ в {fmt.upper()}: " + (err_s or out_s or "")[-300:])

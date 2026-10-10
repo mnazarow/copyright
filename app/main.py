@@ -198,6 +198,8 @@ async def guard(request: Request, call_next):
                 return JSONResponse({"error": msg}, status_code=403)
             return HTMLResponse(f"<!doctype html><meta charset='utf-8'><title>Доступ запрещен</title>"
                                 f"<p style='font:16px Arial;margin:40px'>{html_escape(msg)}</p>", status_code=403)
+    if core.RESTORING.is_set() and path != "/api/health" and not path.startswith("/static"):
+        return _deny(request, 503, "Идет восстановление из резервной копии — обновите страницу через минуту.")
     if path.startswith(PUBLIC) or path == "/metrics":
         return await call_next(request)
     user, how = authed(request)
@@ -1318,6 +1320,8 @@ async def api_bulk(request: Request):
 
 def _rebuild_many(jids):
     for jid in jids:
+        while core.PAUSED.is_set():                    # восстановление из копии — пересборка подождет
+            time.sleep(5)
         try:
             with core.state_lock(jid):
                 rebuild_job(jid)
@@ -1370,12 +1374,11 @@ def settings_page(request: Request, saved: int = 0, applied: str = "", bsaved: s
 
 def _products_info():
     from .pipeline import products
-    ref = products.load(products.PATH())
+    ref = products.summary(products.PATH())
     if not ref:
         return {"items": 0, "sync": products.sync_status()} if products.sync_status() else None
-    t = os.path.getmtime(products.PATH())
-    return {"file": ref.get("file"), "items": len(ref.get("items") or {}), "units": ref.get("units") or {},
-            "time": dt.datetime.fromtimestamp(t).strftime("%d.%m.%Y %H:%M"), "sync": products.sync_status()}
+    return {"file": ref["file"], "items": ref["items"], "units": ref["units"],
+            "time": dt.datetime.fromtimestamp(ref["mtime"]).strftime("%d.%m.%Y %H:%M"), "sync": products.sync_status()}
 
 
 def run_prompt_info():

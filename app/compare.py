@@ -14,7 +14,7 @@ import os
 import re
 
 from . import analytics, core
-from .pipeline.common import norm, safe_dpi
+from .pipeline.common import PairCache, norm, safe_dpi
 
 SKIP_RULES = ("batch", "candidate")
 
@@ -23,7 +23,8 @@ def page_texts(jid):
     p = os.path.join(core.job_dir(jid), "dump.json")
     if not os.path.exists(p):
         return []
-    dump = json.load(open(p, encoding="utf-8"))
+    with open(p, encoding="utf-8") as fh:
+        dump = json.load(fh)
     return [" ".join(pg.get("head", []) + [ln["text"] for ln in pg.get("lines", [])] + pg.get("foot", []))
             for pg in dump.get("lines", [])]
 
@@ -31,16 +32,17 @@ def page_texts(jid):
 SPACE_RULES = ("dspace", "dot", "digitword", "unit", "equals", "times", "pct", "thousands", "mwc", "degree", "range")
 
 
-def still_there(f, raw, normed):
+def still_there(f, raw, normed, flat=None):
     """Ошибочный фрагмент остался в тексте новой версии?
-    Пробельные и знаковые правила, а также правки только регистра, пробелов или «ё» сравниваются по точному тексту."""
+    Пробельные и знаковые правила, а также правки только регистра, пробелов или «ё» сравниваются по точному тексту.
+    flat — текст с одиночными пробелами (вычисляется один раз на сравнение, а не на каждое замечание)."""
     bad = f.get("bad") or ""
     good = f.get("good") or ""
     nb = norm(bad).lower()
     exact = (f.get("rule") in SPACE_RULES or f.get("rule") in ("latin", "mixed", "brand", "quotes")
              or (good not in ("", "—") and nb == norm(good).lower()))
     if exact:
-        flat = re.sub(r"[ \t]+", " ", raw)
+        flat = flat if flat is not None else re.sub(r"[ \t]+", " ", raw)
         return len(bad.strip()) >= 2 and (bad in raw or re.sub(r"[ \t]+", " ", bad) in flat)
     return len(nb) >= 3 and nb in normed
 
@@ -49,8 +51,32 @@ def key(f):
     return (f.get("rule") or "", norm(f.get("bad")).lower(), norm(f.get("good")).lower())
 
 
+_cache = PairCache()
+
+
 def compare(a, b):
     ja, jb = core.get_job(a), core.get_job(b)
+    if not (ja and jb):
+        return None
+    key = ("versions", a, b, PairCache.stamp(core.job_dir(a)), PairCache.stamp(core.job_dir(b)),
+           ja.get("name"), jb.get("name"), ja.get("status"), jb.get("status"))
+    return _cache.get(key, lambda: _compare(a, b, ja, jb))
+
+
+def similarity(x, y):
+    """Сходство текстов страниц, %: по словам (символьное сравнение длинных страниц квадратичное — на каталоге
+    в тысячу страниц оно занимало десятки минут). Очень длинные страницы — оценкой по составу слов."""
+    wx, wy = x.split(), y.split()
+    if not wx or not wy:
+        return 0.0
+    if len(wx) + len(wy) > 6000:                       # очень длинные страницы — по общим тройкам слов (линейно)
+        ga = {tuple(wx[i:i + 3]) for i in range(max(1, len(wx) - 2))}
+        gb = {tuple(wy[i:i + 3]) for i in range(max(1, len(wy) - 2))}
+        return len(ga & gb) / max(1, len(ga | gb))
+    return difflib.SequenceMatcher(None, wx, wy, autojunk=False).ratio()
+
+
+def _compare(a, b, ja, jb):
     sa, sb = core.load_state(a), core.load_state(b)
     if not (ja and jb and sa and sb):
         return None
@@ -59,6 +85,7 @@ def compare(a, b):
     tb = page_texts(b)
     raw_b = " ".join(tb)
     text_b = norm(raw_b).lower()
+    flat_b = re.sub(r"[ \t]+", " ", raw_b)
     used = set()
     fixed, remain, hidden = [], [], []
     # три прохода: точная пара (правило, ошибка, исправление) → (правило, ошибка) → только ошибка:
@@ -81,7 +108,7 @@ def compare(a, b):
                 rest.append(f)
         pending = rest
     for f in pending:
-        if still_there(f, raw_b, text_b):
+        if still_there(f, raw_b, text_b, flat_b):
             hidden.append({"old": f})
         else:
             fixed.append({"old": f})
@@ -94,7 +121,7 @@ def compare(a, b):
         x = ta[i] if i < len(ta) else ""
         y = tb[i] if i < len(tb) else ""
         if norm(x) != norm(y):
-            r = difflib.SequenceMatcher(None, x, y, autojunk=False).ratio() if x and y else 0.0
+            r = similarity(x, y)
             changed.append({"page": i + 1, "similarity": round(100 * r)})
     da = round(10.0 * len(fa) / max(1, sa.get("pages") or 1), 2)
     db = round(10.0 * len(fb) / max(1, sb.get("pages") or 1), 2)
@@ -178,7 +205,11 @@ def page_diff_png(a, b, page, side, dpi=110):
     path, words, color = (pa, removed, (0.82, 0.23, 0.23)) if side == "a" else (pb, added, (0.05, 0.64, 0.05))
     with pdf_lock(), pymupdf.open(path) as doc:
         pg = doc[page - 1]
+        try:
+            dpi = safe_dpi(pg, dpi)
+        except ValueError:                             # страница огромного размера — изображения нет
+            return None
         for w in words:
             r = pymupdf.Rect(w[:4]) + (-1, -1, 1, 1)
             pg.draw_rect(r, color=color, width=1.4, fill=color, fill_opacity=0.18, overlay=True)
-        return pg.get_pixmap(dpi=safe_dpi(pg, dpi)).tobytes("png"), len(words)
+        return pg.get_pixmap(dpi=dpi).tobytes("png"), len(words)

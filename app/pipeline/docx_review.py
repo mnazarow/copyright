@@ -113,18 +113,38 @@ def _norm_ws(s):
     return re.sub(r"\s+", " ", (s or "").replace(" ", " ")).strip()
 
 
-def _find(pars, f):
+class _Texts:
+    """Тексты абзацев: извлекаются один раз, после правки обновляется только измененный абзац (прежде текст всех
+    абзацев документа извлекался заново для каждого замечания — минуты и часы на больших документах)."""
+
+    def __init__(self, pars):
+        self.pars = pars
+        self.raw = [_ptext(p) for p in pars]
+        self.soft = [t.replace("\xa0", " ") for t in self.raw]
+        self.pos = {}                                  # объединенная ячейка таблицы — один абзац в нескольких местах
+        for i, p in enumerate(pars):
+            self.pos.setdefault(id(p._p), []).append(i)
+
+    def refresh(self, p):
+        text = _ptext(p)
+        for i in self.pos.get(id(p._p), []):
+            self.raw[i] = text
+            self.soft[i] = text.replace("\xa0", " ")
+
+
+def _find(pars, f, texts=None):
     """Абзац и позиция ошибки: сначала по цитате (контекст), затем по самой ошибке."""
     bad = f.get("bad") or ""
     if not bad.strip():
         return None
     src = f.get("src") or bad
+    texts = texts or _Texts(pars)
     for exact in (True, False):
-        for p in pars:
-            t = _ptext(p)
+        for k, p in enumerate(pars):
+            t = texts.raw[k]
             if not t:
                 continue
-            hay, needle_src, needle = (t, src, bad) if exact else (t.replace(" ", " "), src.replace(" ", " "), bad.replace(" ", " "))
+            hay, needle_src, needle = (t, src, bad) if exact else (texts.soft[k], src.replace("\xa0", " "), bad.replace("\xa0", " "))
             i = hay.find(needle_src)
             if i >= 0:
                 j = hay.find(needle, i, i + len(needle_src) + len(needle))
@@ -163,8 +183,9 @@ def review(src_path, findings, out_path, author="Корректор"):
                 items.append((i, dict(f, bad=b, good=goods[k] if same else "—", _comment_only=not same)))
         else:
             items.append((i, f))
+    texts = _Texts(pars)
     for i, f in items:
-        loc = _find(pars, f)
+        loc = _find(pars, f, texts)
         if not loc:
             missing += 1
             continue
@@ -221,6 +242,7 @@ def review(src_path, findings, out_path, author="Корректор"):
         cr.set(qn("w:id"), str(c.comment_id))
         ref.append(cr)
         ce.addnext(ref)
+        texts.refresh(p)                               # удаленный текст правки больше не ищется в абзаце
         n_comments += 1
     doc.save(out_path)
     return n_comments, n_changes, missing

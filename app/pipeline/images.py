@@ -31,8 +31,20 @@ def _dhash(dl, rect):
     return bits
 
 
-def _label(lines, rect, articles=None):
-    """Подпись картинки: артикул из справочника рядом (если есть) или ближайшая строка текста."""
+def _has_article(text, known, memo):
+    """Есть ли в строке артикул справочника. Сравнение по обозначениям из строки с множеством артикулов
+    (прежде строка сравнивалась с каждым из десятков тысяч артикулов — на каждую картинку и строку рядом)."""
+    hit = memo.get(text)
+    if hit is None:
+        from .products import TOKEN, norm
+        hit = memo[text] = any(norm(m.group(0)) in known for m in TOKEN.finditer(text))
+    return hit
+
+
+def _label(lines, rect, known=None, memo=None):
+    """Подпись картинки: артикул из справочника рядом (если есть) или ближайшая строка текста.
+    known — множество нормализованных артикулов справочника."""
+    memo = memo if memo is not None else {}
     best, bestd = "", 1e9
     cx = (rect.x0 + rect.x1) / 2
     for (x0, y0, x1, y1), text in lines:
@@ -45,7 +57,7 @@ def _label(lines, rect, articles=None):
         if dy > 120:
             continue
         d = dy + abs((x0 + x1) / 2 - cx) * 0.2
-        if articles and any(a in t.upper() for a in articles):
+        if known and _has_article(t, known, memo):
             d -= 80                                     # строка с артикулом важнее
         if d < bestd:
             best, bestd = t, d
@@ -57,6 +69,9 @@ def check(pdf_path, st, articles=None):
         return None
     thr = int(st.get("images_hash_distance") if st.get("images_hash_distance") is not None else 4)
     max_rep = int(st.get("images_max_repeats") or 3)
+    from .products import norm as _anorm
+    known_articles = {_anorm(a) for a in (articles or [])}
+    memo = {}
     occ = []
     with pymupdf.open(pdf_path) as doc:
         for pno, page in enumerate(doc, 1):
@@ -82,7 +97,7 @@ def check(pdf_path, st, articles=None):
                     if lines is None:
                         lines = [((b[0], b[1], b[2], b[3]), b[4]) for b in page.get_text("blocks") if b[6] == 0]
                     occ.append({"page": pno, "xref": xref, "hash": h, "rect": [round(v, 1) for v in r],
-                                "label": _label(lines, r, articles)})
+                                "label": _label(lines, r, known_articles, memo)})
             if len(occ) > 3000:
                 break
     # группы одинаковых картинок: тот же объект (xref) или близкий хеш

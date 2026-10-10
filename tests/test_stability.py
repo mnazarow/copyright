@@ -265,3 +265,164 @@ def test_worker_sigterm_exits_75_and_kills_group(client, tmp_path):
         core._kill_group(proc)
         core.update_job(jid, status="failed")
         core.delete_job(jid)
+
+
+def test_backup_survives_files_changing(tmp_path):
+    """Файлы заданий появляются, исчезают и переписываются во время архивации — копия все равно создается."""
+    import tarfile
+    from app import backup
+    churn = os.path.join(core.JOBS, "99999")
+    os.makedirs(churn, exist_ok=True)
+    stop = threading.Event()
+
+    def writer():
+        i = 0
+        while not stop.is_set():
+            p = os.path.join(churn, f"f{i % 50}.json")
+            try:
+                with open(p, "w") as fh:                  # переписывается на месте (укорачивается)
+                    fh.write("x" * (1000 if i % 2 else 10))
+                if i % 3 == 0:
+                    os.remove(p)
+            except OSError:
+                pass
+            i += 1
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    saved = core.load_settings().get("backup_dir")
+    core.update_settings(lambda s: s.__setitem__("backup_dir", str(tmp_path / "bk")))
+    try:
+        for _ in range(3):
+            path = backup.run(None, "тест")
+            with tarfile.open(path) as tar:
+                assert any(n.endswith("korrektor.db") for n in tar.getnames())
+                for m in tar.getmembers():                # архив читается целиком: размеры совпадают с данными
+                    if m.isfile():
+                        tar.extractfile(m).read()
+    finally:
+        stop.set()
+        t.join(5)
+        core.update_settings(lambda s: s.__setitem__("backup_dir", saved or "/var/backups/korrektor"))
+        import shutil
+        shutil.rmtree(churn, ignore_errors=True)
+    assert os.umask(0o022) == 0o022                       # umask процесса восстановлен
+    os.umask(0o022)
+
+
+def test_private_umask_nested_threads():
+    old = os.umask(0o022)
+    try:
+        a, b = core.private_umask(), core.private_umask()
+        a.__enter__()
+        b.__enter__()
+        a.__exit__(None, None, None)                      # порядок выхода не важен: возвращает последний
+        b.__exit__(None, None, None)
+        assert os.umask(0o022) == 0o022
+    finally:
+        os.umask(old)
+
+
+def test_products_parse_streams_and_limits(monkeypatch):
+    import io
+    import openpyxl
+    from app.pipeline import products
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Артикул", "Наименование", "Мощность, кВт"])
+    for i in range(50):
+        ws.append([f"SPL-{1000 + i}", f"Насос {i}", 1.5 + i])
+    buf = io.BytesIO()
+    wb.save(buf)
+    ref = products.parse(buf.getvalue(), "p.xlsx")
+    assert len(ref["items"]) == 50 and ref["units"] == {"Мощность": "кВт"}
+    monkeypatch.setattr(products, "MAX_ROWS", 10)
+    with pytest.raises(ValueError):
+        products.parse(buf.getvalue(), "p.xlsx")
+
+
+def test_llm_lines_cap(monkeypatch):
+    class R:
+        def __init__(self, chunks):
+            self.chunks = chunks
+
+        def iter_text(self):
+            yield from self.chunks
+    assert list(llm._lines(R(["a\nb", "c\r\nd", "e"]))) == ["a", "bc", "de"]
+    monkeypatch.setattr(llm, "MAX_LINE", 100)
+    with pytest.raises(llm.AIError):
+        list(llm._lines(R(["x" * 60, "y" * 60])))
+
+
+def test_analytics_cache_follows_edits(client, tmp_path):
+    jid = upload(client, make_pdf(str(tmp_path / "an.pdf")))
+    assert wait(client, jid)["status"] == "done"
+    s1 = next(s for s in analytics.all_stats() if s["id"] == jid)
+    st = core.load_state(jid)
+    fid = st["findings"][0]["id"]
+    time.sleep(0.01)
+    r = client.post(f"/api/jobs/{jid}/findings/{fid}", json={"status": "accepted"}, headers=O)
+    assert r.status_code == 200
+    s2 = next(s for s in analytics.all_stats() if s["id"] == jid)
+    assert [x["status"] for x in s2["findings"] if x["id"] == fid] == ["accepted"]
+    assert s1 is not s2                                   # копия верхнего уровня, кеш не портится
+    ex = analytics.explore({"period": "all", "job": str(jid)}, limit=2, offset=1)
+    assert ex["total"] == len(s2["findings"]) and len(ex["rows"]) == min(2, max(0, ex["total"] - 1))
+
+
+def test_lang_of_large_text_fast():
+    from app import langcmp
+    t = time.time()
+    assert langcmp.lang_of("Насос " * 2_000_000) == "ru"
+    assert time.time() - t < 2
+
+
+def test_backup_tree_does_not_touch_live_database(tmp_path):
+    """Архивация папки данных не открывает файлы базы: закрытие любого дескриптора файла снимает POSIX-блокировки
+    SQLite всего процесса — запись веб-сервера потерялась бы."""
+    import tarfile
+    from app import backup
+    data = tmp_path / "data"
+    (data / "jobs" / "1").mkdir(parents=True)
+    (data / "jobs" / "1" / "state.json").write_text("{}")
+    db = str(data / "korrektor.db")
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE t(x)")
+    c.commit()
+    w = sqlite3.connect(db, isolation_level=None)
+    w.execute("BEGIN IMMEDIATE")
+    w.execute("INSERT INTO t VALUES('web')")
+    other = ("import sqlite3,sys\nc=sqlite3.connect(sys.argv[1], isolation_level=None, timeout=0.2)\ntry:\n"
+             " c.execute('BEGIN IMMEDIATE'); c.execute(\"INSERT INTO t VALUES('job')\"); c.execute('COMMIT'); print('ok')\n"
+             "except sqlite3.OperationalError:\n print('locked')")
+
+    def flt(ti):
+        return None if ti.name.endswith(("korrektor.db", "korrektor.db-wal", "korrektor.db-shm")) else ti
+    with tarfile.open(str(tmp_path / "x.tgz"), "w:gz") as tar:
+        backup._add_tree(tar, str(data), "data", flt)
+    r = subprocess.run([sys.executable, "-c", other, db], capture_output=True, text=True).stdout.strip()
+    assert r == "locked"                                  # блокировка веб-сервера на месте
+    w.execute("COMMIT")
+    assert sqlite3.connect(db).execute("SELECT x FROM t").fetchall() == [("web",)]
+
+
+def test_docx_review_merged_cells(tmp_path):
+    """Объединенная ячейка — один абзац в нескольких местах списка: правки ложатся на нужный текст."""
+    import re
+    import zipfile
+    from docx import Document
+    from app.pipeline import docx_review
+    src = str(tmp_path / "m.docx")
+    d = Document()
+    d.add_paragraph("Вступление без ошибок.")
+    t = d.add_table(rows=2, cols=3)
+    a = t.cell(0, 0).merge(t.cell(0, 2))
+    a.text = "Насос работает тихо, а мотор горячий и шумный."
+    t.cell(1, 0).text = "x"
+    d.save(src)
+    findings = [{"page": 1, "type": "Орфография", "bad": "Насос", "good": "Насосы", "fix": "Насосы", "note": "1"},
+                {"page": 1, "type": "Орфография", "bad": "горячий", "good": "горячий!", "fix": "горячий!", "note": "2"}]
+    out = str(tmp_path / "out.docx")
+    assert docx_review.review(src, findings, out) == (2, 2, 0)
+    x = zipfile.ZipFile(out).read("word/document.xml").decode()
+    assert re.findall(r"<w:delText[^>]*>([^<]*)</w:delText>", x) == ["Насос", "горячий"]

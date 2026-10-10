@@ -30,10 +30,15 @@ def each_line(idx):
 
 
 # ------------------------------------------------------------------ типографика
-def rule_regex(idx, rule, rx, repl, type_, note, cond=None, group_by_bad=False):
+def rule_regex(idx, rule, rx, repl, type_, note, cond=None, group_by_bad=False, need=None):
+    """need — знаки, без которых правило не сработает: строки без них не проверяются (и регулярное выражение
+    не перебирает длинные строки впустую)."""
     out = []
+    rx = re.compile(rx)
     for page, zone, text in each_line(idx):
-        for m in re.finditer(rx, text):
+        if need and not any(c in text for c in need):
+            continue
+        for m in rx.finditer(text):
             if cond and not cond(m, text):
                 continue
             bad = m.group(0)
@@ -56,10 +61,12 @@ def typography(idx, st):
     if st.get("typo_range_dash"):
         H += rule_regex(idx, "range", r"(?<![\w./\-№])(\d+(?:,\d+)?)-(\d+(?:,\d+)?)(?![\w./\-])", r"\1–\2",
                         "Типографика", "В диапазоне чисел ставится короткое тире без пробелов, а не дефис (п. 5.2).",
-                        cond=range_cond)
+                        cond=range_cond, need="-")
     if st.get("typo_space_after_dot"):
-        H += rule_regex(idx, "dot", r"([а-яё]{3,})\.([А-ЯЁа-яё]{3,})", r"\1. \2", "Типографика",
-                        "После точки пропущен пробел.")
+        # (?<![а-яё]) — поиск только с начала слова: на длинной строке без пробелов прежнее выражение
+        # перебирало каждую позицию (секунды на строку, весь процесс стоял)
+        H += rule_regex(idx, "dot", r"(?<![а-яё])([а-яё]{3,})\.([А-ЯЁа-яё]{3,})", r"\1. \2", "Типографика",
+                        "После точки пропущен пробел.", need=".")
     if st.get("typo_digit_word"):
         H += rule_regex(idx, "digitword", r"(?<![\w])(\d+[A-Z]?)([а-яё]{3,})", r"\1 \2", "Типографика",
                         "Пропущен пробел между обозначением (числом) и следующим словом.")
@@ -71,23 +78,23 @@ def typography(idx, st):
                         lambda m: ((m.group(1) + " " if m.group(1) else m.group(2)) + "\u00b0" + m.group(3)) if m.group(3)
                         else (m.group(1) or "") + m.group(2) + "\u00b0",
                         "Типографика", "Вместо знака градуса ° (U+00B0) стоит кольцо ˚ или индикатор º; "
-                                       "между числом и «°С» нужен пробел (п. 5.3).")
+                                       "между числом и «°С» нужен пробел (п. 5.3).", need="\u02da\u00ba")
     if st.get("typo_quotes"):
         if st.get("quote_style", "ru") == "ru":
             H += rule_regex(idx, "quotes", r'"([^"\n]{1,40})"', r"«\1»", "Типографика",
-                            "Прямые кавычки вместо «елочек»; внутренние кавычки — „лапки“.")
+                            "Прямые кавычки вместо «елочек»; внутренние кавычки — „лапки“.", need='"')
         else:                                          # английские кавычки (для англоязычных документов)
             H += rule_regex(idx, "quotes", r'"([^"\n]{1,40})"|«([^«»\n]{1,40})»',
                             lambda m: "\u201c" + (m.group(1) or m.group(2)) + "\u201d", "Типографика",
                             "В документе приняты английские кавычки “…” (настройка «Кавычки»).")
     if st.get("typo_inch"):
         H += rule_regex(idx, "inch", r"(\d|½|¼|¾)\s*(?:''|’’)", r"\1″", "Типографика",
-                        "Знак дюйма — двойной штрих ″ (U+2033), а не два апострофа.")
+                        "Знак дюйма — двойной штрих ″ (U+2033), а не два апострофа.", need="'’")
     if st.get("typo_equals"):
-        H += rule_regex(idx, "equals", r"[\wА-яЁё]+\s?=\s?[\wА-яЁё]+",
+        H += rule_regex(idx, "equals", r"(?<![\wА-яЁё])[\wА-яЁё]+\s?=\s?[\wА-яЁё]+",
                         lambda m: re.sub(r"\s*=\s*", " = ", m.group(0)), "Типографика",
                         "Знак «=» отбивается пробелами с обеих сторон (п. 5.7).",
-                        cond=lambda m, t: " = " not in m.group(0))
+                        cond=lambda m, t: " = " not in m.group(0), need="=")
     if st.get("typo_unit"):
         H += rule_regex(idx, "unit", r"(?<![\w.])(\d+(?:,\d+)?)(мм|см|мкм|МПа|бар|кг|м³|°С|°C|кВт|шт|Вт|Гц|л|В|м)(?![\wА-яЁё])",
                         r"\1 \2", "Типографика",
@@ -96,7 +103,7 @@ def typography(idx, st):
         H += rule_regex(idx, "times", r"(\d)\s*[хx×]\s*(\d)", r"\1 × \2", "Типографика",
                         "Знак умножения — «×», отбивается пробелами; кириллическая «х» и латинская «x» "
                         "вместо него недопустимы (п. 5.7, 5.8).",
-                        cond=lambda m, t: m.group(0) != m.group(1) + " × " + m.group(2))
+                        cond=lambda m, t: m.group(0) != m.group(1) + " × " + m.group(2), need="хx×")
     if st.get("typo_mwc"):
         H += rule_regex(idx, "mwc", r"м\.\s?вод\.?\s?ст\.?", "м вод. ст.", "Типографика",
                         "Единица записывается «м вод. ст.»: после «м» точка не ставится.",
@@ -470,10 +477,10 @@ def figures(idx, st):
                                  f"пропущен номер {nums}.", group=("figures", k, "gap", c["num"]), clause="нумерация"))
                 prev = c
         have = set(seen)
+        nums = sorted(have, key=_num_key)
         for r in refs:                                # ссылки на несуществующие номера
             if r["kind"] != k or r["num"] in have:
                 continue
-            nums = sorted(have, key=_num_key)
             H.append(hit("figures", r["page"], r["line"], r["label"], None, AUTHOR,
                          f"Ссылка «{r['label']}», а {gen} с таким номером в документе нет "
                          f"(есть: {', '.join(nums[:8])}{' …' if len(nums) > 8 else ''}).",

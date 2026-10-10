@@ -100,11 +100,8 @@ def _save(login, secret, last, recovery):
             if os.path.exists(ADMIN_FILE):
                 os.remove(ADMIN_FILE)
             return
-        old = os.umask(0o077)
-        try:
+        with core.private_umask():
             core.write_json_atomic(ADMIN_FILE, {"secret": secret, "last": last, "recovery": recovery})
-        finally:
-            os.umask(old)
         return
     with core.db() as c:
         c.execute("UPDATE users SET totp_secret=?, totp_last=?, totp_recovery=? WHERE login=?",

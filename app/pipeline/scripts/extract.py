@@ -310,16 +310,12 @@ empty_pages, placeholders = [], []
 for pno, page in enumerate(doc, 1):
     txt = page.get_text().strip()
     imgs = page.get_images()
-    if len(re.sub(r"\d", "", txt)) < 3 and not imgs and not page.get_drawings():
+    drawings = page.get_drawings()                     # один раз на страницу (прежде — на каждую серую заливку)
+    if len(re.sub(r"\d", "", txt)) < 3 and not imgs and not drawings:
         empty_pages.append(pno)
     area = page.rect.width * page.rect.height
-    img_rects = []
-    for im in imgs:
-        try:
-            img_rects += page.get_image_rects(im[0])
-        except Exception:
-            pass
-    for dr in page.get_drawings():
+    img_rects = words = None                           # нужны только при найденной серой заливке
+    for dr in drawings:
         f = dr.get("fill")
         r = dr.get("rect")
         if not f or not r or r.width * r.height < area * 0.08:
@@ -327,8 +323,14 @@ for pno, page in enumerate(doc, 1):
         if not all(it[0] == "re" for it in dr.get("items", [])):   # заглушка — простой прямоугольник
             continue
         if max(f) - min(f) < 0.03 and 0.75 < f[0] < 0.97:          # однотонный светло-серый
-            words_in = [w for w in page.get_text("words") if pymupdf.Rect(w[:4]).intersects(r)]
-            strokes = [x for x in page.get_drawings() if x.get("rect") and x["rect"] != r
+            if img_rects is None:
+                try:                                   # положение картинок без распаковки каждой (get_image_rects)
+                    img_rects = [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()]
+                except Exception:
+                    img_rects = []
+                words = page.get_text("words")
+            words_in = [w for w in words if pymupdf.Rect(w[:4]).intersects(r)]
+            strokes = [x for x in drawings if x.get("rect") and x["rect"] != r
                        and r.contains(x["rect"])]
             if not any(r.intersects(ir) for ir in img_rects) and not words_in and len(strokes) < 5:
                 placeholders.append({"page": pno, "rect": [round(v) for v in r]})

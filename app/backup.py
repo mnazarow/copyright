@@ -3,6 +3,7 @@
 например на сетевой диск. Хранится заданное число последних копий."""
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -50,19 +51,16 @@ class _Plain:
         from . import crypt
         if not crypt.is_encrypted(self.path):
             return self.path
-        old = os.umask(0o077)
         try:
             # расшифрованная копия — на локальный диск сервера (папка данных; «.restore-» не попадает в копии),
             # а не рядом с зашифрованной: сетевой диск с копиями не должен видеть открытые данные
-            fd, self.tmp = tempfile.mkstemp(prefix=".restore-decrypt-", suffix=".tgz", dir=core.DATA)
+            fd, self.tmp = tempfile.mkstemp(prefix=".restore-decrypt-", suffix=".tgz", dir=core.DATA)   # 0600
             os.close(fd)
             crypt.decrypt_file(self.path, self.tmp, password(self.st))
         except Exception:
             if self.tmp and os.path.exists(self.tmp):
                 os.remove(self.tmp)
             raise
-        finally:
-            os.umask(old)
         return self.tmp
 
     def __exit__(self, *a):
@@ -114,8 +112,8 @@ def run(st=None, reason="расписание", rotate=True):
             if full == dest_real or full.startswith(dest_real + os.sep):
                 return None                             # папка копий внутри данных — не копировать саму себя
             return ti
-        old = os.umask(0o077)
         dbcopy = tmp + ".db"
+        umask = core.private_umask().__enter__()
         try:
             src = sqlite3.connect(core.DB_FILE, timeout=30)
             dst = sqlite3.connect(dbcopy)
@@ -125,22 +123,21 @@ def run(st=None, reason="расписание", rotate=True):
             dst.close()
             arc = os.path.basename(data_real) or "data"
             with tarfile.open(tmp, "w:gz", compresslevel=6) as tar:
-                tar.add(core.DATA, arcname=arc, filter=flt)
+                _add_tree(tar, core.DATA, arc, flt)
                 tar.add(dbcopy, arcname=f"{arc}/korrektor.db")
                 if os.access(ENV_FILE, os.R_OK):
                     _add_env(tar, encrypted=bool(pw))
         finally:
-            os.umask(old)
+            umask.__exit__(None, None, None)
             if os.path.exists(dbcopy):
                 os.remove(dbcopy)
         if pw:
             from . import crypt
-            old = os.umask(0o077)
             try:
-                crypt.encrypt_file(tmp, path + ".encpart", pw)   # AES-256-GCM, ключ из пароля (scrypt)
+                with core.private_umask():
+                    crypt.encrypt_file(tmp, path + ".encpart", pw)   # AES-256-GCM, ключ из пароля (scrypt)
                 os.replace(path + ".encpart", path)
             finally:
-                os.umask(old)
                 if os.path.exists(path + ".encpart"):
                     os.remove(path + ".encpart")
             os.remove(tmp)
@@ -177,6 +174,54 @@ def run(st=None, reason="расписание", rotate=True):
         _running.release()
 
 
+SNAPSHOT_MAX = 16 * 1024 * 1024
+
+
+def _add_tree(tar, root, arc, flt):
+    """Папка данных в архив. tar.add(папка) прерывал всю копию, если файл исчез или был заменен во время
+    архивации (работающее задание, очистка старых заданий): такие файлы пропускаются, а размер берется у уже
+    открытого файла. Фильтр применяется ДО открытия файла: открыть и закрыть файл базы (korrektor.db, -wal, -shm)
+    нельзя — POSIX снимает при этом блокировки SQLite всего процесса, и запись в базу теряется."""
+    root = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, root)
+        darc = arc if rel == "." else f"{arc}/{rel}"
+        try:
+            ti = flt(tar.gettarinfo(dirpath, arcname=darc))
+        except OSError:
+            dirnames[:] = []
+            continue
+        if ti is None:
+            dirnames[:] = []                         # исключенная папка (картинки страниц, служебные) — целиком
+            continue
+        tar.addfile(ti)
+        dirnames.sort()
+        for fn in sorted(filenames):
+            full, farc = os.path.join(dirpath, fn), f"{darc}/{fn}"
+            try:
+                meta = flt(tar.gettarinfo(full, arcname=farc))      # только сведения о файле (lstat), без открытия
+                if meta is None:
+                    continue
+                if meta.issym():
+                    tar.addfile(meta)
+                    continue
+                if not meta.isfile():                # FIFO, сокет, устройство — не копируются (и не «зависают»)
+                    continue
+                with open(full, "rb") as fh:
+                    ti = tar.gettarinfo(arcname=farc, fileobj=fh)
+                    ti = flt(ti) if ti is not None else None
+                    if ti is None or not ti.isfile():
+                        continue
+                    if ti.size <= SNAPSHOT_MAX:      # небольшой файл — снимком в памяти: его могут переписать на месте
+                        data = fh.read()
+                        ti.size = len(data)
+                        tar.addfile(ti, io.BytesIO(data))
+                    else:                            # исходные документы и т. п. — не меняются после загрузки
+                        tar.addfile(ti, fh)
+            except (FileNotFoundError, NotADirectoryError):
+                continue                             # файл удалили во время архивации
+
+
 SECRET_ENV = ("KORREKTOR_SECRET", "KORREKTOR_ADMIN_PASSWORD")
 
 
@@ -198,14 +243,20 @@ def listing(st=None):
     st = st or core.load_settings()
     d = target_dir(st)
     try:
-        files = sorted((f for f in os.listdir(d) if ANY_NAME_RE.match(f)), key=lambda f: os.path.getmtime(os.path.join(d, f)),
-                       reverse=True)
+        names = [f for f in os.listdir(d) if ANY_NAME_RE.match(f)]
     except OSError:
         return []
+    rows = []
+    for f in names:
+        try:                                         # копию могли удалить (ротация) между списком и чтением размера
+            s = os.stat(os.path.join(d, f))
+        except OSError:
+            continue
+        rows.append((s.st_mtime, f, s.st_size))
+    rows.sort(reverse=True)
     checks = status().get("checks", {})
-    return [{"name": f, "size": os.path.getsize(os.path.join(d, f)), "check": checks.get(f),
-             "time": dt.datetime.fromtimestamp(os.path.getmtime(os.path.join(d, f))).isoformat(timespec="minutes")}
-            for f in files]
+    return [{"name": f, "size": size, "check": checks.get(f),
+             "time": dt.datetime.fromtimestamp(mt).isoformat(timespec="minutes")} for mt, f, size in rows]
 
 
 def path_of(name, st=None):
@@ -385,6 +436,8 @@ def _restore(path, live, wait, safety_copy):
             raise RuntimeError("идет проверка или загрузка документа — дождитесь окончания и повторите")
         if safety_copy:
             safety = run(reason="перед восстановлением", rotate=False)   # не удалить восстанавливаемую копию
+        if live:
+            core.RESTORING.set()                    # замена файлов и базы: все запросы получают «подождите» (main.guard)
         stage = tempfile.mkdtemp(prefix=".restore-", dir=core.DATA)
         old = os.path.join(stage, "_old")
         moved, db_replaced = [], False
@@ -446,6 +499,7 @@ def _restore(path, live, wait, safety_copy):
                 "safety": os.path.basename(safety) if safety else "", "pages": chk.get("pages_included")}
     finally:
         if live:
+            core.RESTORING.clear()
             core.PAUSED.clear()
             core.kick()
 
@@ -457,10 +511,9 @@ def save_upload(src):
     head = src.read(len(b"KORREKTOR-ENC1\n"))
     src.seek(0)
     name, path = _unique(d, "upload", ".tgz.enc" if head == b"KORREKTOR-ENC1\n" else ".tgz")
-    old = os.umask(0o077)
     try:
         total = 0
-        with open(path + ".part", "wb") as fh:
+        with open(os.open(path + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as fh:
             for chunk in iter(lambda: src.read(1 << 20), b""):
                 total += len(chunk)
                 if total > MAX_UPLOAD:
@@ -471,8 +524,6 @@ def save_upload(src):
         if os.path.exists(path + ".part"):
             os.remove(path + ".part")
         raise
-    finally:
-        os.umask(old)
     return path
 
 
@@ -512,12 +563,15 @@ def _cli():
 
 
 def loop():
+    tried = None                                     # день последней попытки — и когда статус не записался (диск полон)
     while True:
         try:
             st = core.load_settings()
             if st.get("backup_enabled"):
                 now = dt.datetime.now()
-                if now.hour >= int(st.get("backup_hour", 2) or 0) and status().get("day") != now.date().isoformat():
+                day = now.date().isoformat()
+                if now.hour >= int(st.get("backup_hour", 2) or 0) and status().get("day") != day and tried != day:
+                    tried = day                      # иначе при сбое записи статуса архив создавался бы каждые 5 минут
                     try:
                         run(st)
                     except Exception:  # noqa — статус и журнал уже записаны

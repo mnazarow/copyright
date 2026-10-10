@@ -17,7 +17,7 @@ SUFFIXES = re.compile(r"(MT|PS|PSMT|Std|Pro|LT|OT|TT)$")
 def family(font):
     """«ABCDEF+Arial-BoldItalicMT» → «arial»; «PTSans-Regular» → «ptsans»; «Times New Roman,Bold» → «timesnewroman»."""
     f = (font or "").split("+", 1)[-1]
-    f = re.split(r"[-,]", f, 1)[0]
+    f = re.split(r"[-,]", f, maxsplit=1)[0]
     f = SUFFIXES.sub("", f.replace(" ", ""))
     return f.lower()
 

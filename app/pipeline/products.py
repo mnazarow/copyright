@@ -15,7 +15,12 @@ import io
 import json
 import os
 import re
+import threading
+import time
 from collections import Counter, defaultdict
+
+MAX_ROWS = 300_000                     # строк справочника: больше — не выгрузка каталога, а ошибка (или «zip-бомба»)
+MAX_COLS = 200
 
 def PATH():
     return os.path.join(os.environ.get("KORREKTOR_DATA") or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -43,12 +48,24 @@ def num(v):
         return None
 
 
+def _xlsx_rows(data):
+    """Строки листа по одной (прежде весь лист превращался в список строк: XLSX в 50 МБ раскрывался в гигабайты)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        ws = wb.worksheets[0]
+        width = min(MAX_COLS, ws.max_column or MAX_COLS)   # строки дополняются до этой ширины — не шире листа
+        for n, row in enumerate(ws.iter_rows(values_only=True, max_col=width)):
+            if n > MAX_ROWS:
+                raise ValueError(f"в справочнике больше {MAX_ROWS:,} строк".replace(",", " "))
+            yield ["" if c is None else str(c) for c in row]
+    finally:
+        wb.close()
+
+
 def _rows_from_bytes(data, filename):
     if filename.lower().endswith((".xlsx", ".xlsm")):
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-        ws = wb.worksheets[0]
-        return [["" if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)]
+        return _xlsx_rows(data)
     for enc in ("utf-8-sig", "cp1251"):
         try:
             text = data.decode(enc)
@@ -65,17 +82,21 @@ def _rows_from_bytes(data, filename):
 
 def parse(data, filename="products.csv"):
     """→ справочник {"columns": [...], "units": {...}, "items": {нормированный артикул: {...}}, "file": имя}."""
-    rows = [r for r in _rows_from_bytes(data, filename) if any(str(c).strip() for c in r)]
-    if len(rows) < 2:
+    rows = (r for r in _rows_from_bytes(data, filename) if any(str(c).strip() for c in r))
+    first = next(rows, None)
+    if first is None:
         raise ValueError("в файле нет строк: нужна строка заголовков и хотя бы одна строка данных")
-    head = [str(h).strip() for h in rows[0]]
+    head = [str(h).strip() for h in first]
     units = {}
     for i, h in enumerate(head[1:], 1):
         m = UNIT_IN_HEADER.match(h)
         if m and m.group(2).strip() and not m.group(2).strip().isdigit():
             units[i] = (m.group(1).strip() or h, m.group(2).strip())
     items = {}
-    for r in rows[1:]:
+    n = -1
+    for n, r in enumerate(rows):
+        if n > MAX_ROWS:
+            raise ValueError(f"в справочнике больше {MAX_ROWS:,} строк".replace(",", " "))
         art = str(r[0]).strip() if r else ""
         if not art or len(art) > 60:
             continue
@@ -85,19 +106,47 @@ def parse(data, filename="products.csv"):
                 params[name] = {"value": num(r[i]), "unit": unit, "raw": str(r[i]).strip()}
         items[norm(art)] = {"article": art, "name": str(r[1]).strip() if len(r) > 1 and 1 not in units else "",
                             "params": params}
+    if n < 0:
+        raise ValueError("в файле нет строк: нужна строка заголовков и хотя бы одна строка данных")
     if not items:
         raise ValueError("не найдено ни одного артикула в первой колонке")
     return {"columns": head, "units": {v[0]: v[1] for v in units.values()}, "items": items,
             "file": os.path.basename(filename)}
 
 
+def _write_json(path, data):
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"   # загрузка и автообновление — не в один файл
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def save(data, filename, path):
     ref = parse(data, filename)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(ref, fh, ensure_ascii=False)
-    os.replace(tmp, path)
+    _write_json(path, ref)
     return ref
+
+
+_summary = {"key": None, "value": None}
+
+
+def summary(path):
+    """Файл, число позиций и единицы справочника — без чтения всего справочника на каждый показ настроек."""
+    try:
+        s = os.stat(path)
+    except OSError:
+        return None
+    key = (s.st_mtime_ns, s.st_size, s.st_ino)
+    if _summary["key"] != key:
+        ref = load(path)
+        _summary.update(key=key, value=None if not ref else {
+            "file": ref.get("file"), "items": len(ref.get("items") or {}), "units": ref.get("units") or {},
+            "mtime": s.st_mtime})
+    return _summary["value"]
 
 
 def load(path):
@@ -360,13 +409,16 @@ def sync(st, max_bytes=50 * 1024 * 1024):
         if st.get("products_sync_auth"):
             headers["Authorization"] = st["products_sync_auth"].strip()
         buf = bytearray()
-        with httpx.stream("GET", url, headers=headers, timeout=60, follow_redirects=True) as r:
-            if r.status_code != 200:
+        deadline = time.time() + SYNC_TIMEOUT        # тайм-аут httpx — на каждое чтение; медленный сервер, отдающий
+        with httpx.stream("GET", url, headers=headers, timeout=60, follow_redirects=True) as r:   # по байту, держал бы
+            if r.status_code != 200:                                                               # поток часами
                 raise ValueError(f"сервер ответил {r.status_code}")
             for chunk in r.iter_bytes():
                 buf += chunk
                 if len(buf) > max_bytes:
                     raise ValueError("выгрузка больше 50 МБ")
+                if time.time() > deadline:
+                    raise ValueError(f"выгрузка не скачалась за {SYNC_TIMEOUT // 60} мин")
             ctype = r.headers.get("content-type", "")
         name = os.path.basename(url.split("?")[0]) or "products.csv"
         if not name.lower().endswith((".csv", ".txt", ".xlsx", ".xlsm")):
@@ -375,23 +427,32 @@ def sync(st, max_bytes=50 * 1024 * 1024):
         res.update(ok=True, items=len(ref["items"]), units=ref["units"], file=name)
     except Exception as e:  # noqa
         res.update(ok=False, error=str(e)[:300])
-    tmp = sync_status_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(res, fh, ensure_ascii=False)
-    os.replace(tmp, sync_status_path())
+    try:
+        _write_json(sync_status_path(), res)
+    except OSError:
+        pass
     return res
+
+
+SYNC_TIMEOUT = 600
 
 
 def sync_loop(load_settings, log):
     import datetime as dt
-    import time
+    tried = None                                     # и при сбое записи статуса — не чаще раза в день
     while True:
         try:
             st = load_settings()
             now = dt.datetime.now()
             last = sync_status().get("time", "")[:10]
+            today = now.date().isoformat()
+            from .. import core
+            if core.PAUSED.is_set():                 # восстановление из копии
+                time.sleep(60)
+                continue
             if st.get("products_sync_url") and now.hour >= int(st.get("products_sync_hour", 6) or 0) \
-                    and last != now.date().isoformat():
+                    and last != today and tried != today:
+                tried = today
                 r = sync(st)
                 if not r.get("ok"):
                     log.warning("автообновление справочника: %s", r.get("error"))

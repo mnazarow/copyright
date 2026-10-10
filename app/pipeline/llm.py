@@ -347,7 +347,9 @@ def _read_stream(st, resp, acc):
         raise AIError(f"по адресу {endpoint(st)} отвечает веб-страница, а не API модели — проверьте «Адрес API» и "
                       "«Провайдер»", "config")
     if "json" in ctype and "ndjson" not in ctype and "event-stream" not in ctype and prov != "ollama":
-        raw = resp.read() or b"{}"                              # сервер не поддерживает поток — обычный ответ
+        raw = _read_capped(resp, MAX_BODY + 1) or b"{}"          # сервер не поддерживает поток — обычный ответ
+        if len(raw) > MAX_BODY:
+            raise AIError(f"ответ сервера модели больше {MAX_BODY // 2 ** 20} МБ — проверьте «Адрес API»", "format")
         try:
             data = json.loads(raw)
         except ValueError:
@@ -367,7 +369,9 @@ def _read_stream(st, resp, acc):
             u = data.get("usage") or {}
             acc["usage"] = {"input_tokens": u.get("prompt_tokens"), "output_tokens": u.get("completion_tokens")}
         return
-    for line in resp.iter_lines():
+    for line in _lines(resp):
+        if acc.get("abort"):                                     # запрос уже прерван — поток не дочитывает ответ
+            raise AIError("запрос прерван", "cancelled")
         acc["last"] = time.time()
         line = line.strip()
         if not line:
@@ -669,6 +673,28 @@ def request(st, system, user, log=None, status=None, should_stop=None, label="з
     raise AIError("сервис отклоняет запрос и после подстройки параметров", "badrequest")
 
 
+MAX_BODY = 32 * 2 ** 20       # ответ без потока
+MAX_LINE = 8 * 2 ** 20        # строка потока: сервер, отдающий данные без переводов строк, — не API модели
+
+
+def _lines(resp):
+    """Строки потокового ответа. httpx.iter_lines копит строку без ограничения: ошибочный «Адрес API», отдающий
+    поток без переводов строк, занимал бы память, пока не истечет тайм-аут."""
+    buf = ""
+    for chunk in resp.iter_text():
+        buf += chunk
+        if "\n" not in buf and "\r" not in buf:
+            if len(buf) > MAX_LINE:
+                raise AIError(f"сервер модели прислал строку длиннее {MAX_LINE // 2 ** 20} МБ — это не потоковый ответ "
+                              "модели; проверьте «Адрес API» и «Провайдер»", "format")
+            continue
+        parts = buf.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        buf = parts.pop()
+        yield from parts
+    if buf:
+        yield buf
+
+
 def _read_capped(resp, limit):
     """Начало тела ответа: ошибочный «Адрес API» может отдавать огромную или бесконечную страницу."""
     buf = b""
@@ -738,6 +764,7 @@ def _request_once(st, system, user, log, status, should_stop, label, ctx):
             abort = AIError(f"запрос длится дольше {int(hard // 60)} мин — прерван (предел: три «Тайм-аута ожидания "
                             "ответа», но не меньше 15 минут)", "timeout", retry=True)
         if abort:
+            acc["abort"] = True                       # поток запроса перестает читать ответ
             _kill(acc["client"])
             raise abort
         if now >= next_beat:
