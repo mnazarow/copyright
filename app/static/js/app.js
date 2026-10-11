@@ -25,12 +25,13 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': 
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => add(e.dataTransfer.files));
-  // «Дополнительно» свернуто: если профиль или режим выбраны не «как в настройках», рядом с заголовком — «изменено»
+  // «Дополнительно» свернуто: если профиль или режим выбраны не «как в настройках» или заполнена строка в шапку
+  // отчета, рядом с заголовком — «изменено»
   const more = $('#upmore'), mark = $('#upmore-changed');
   if (more && mark) {
-    const sel = $$('select', more);
-    const upd = () => { mark.hidden = !sel.some(s => s.value); };
-    sel.forEach(s => s.addEventListener('change', upd));
+    const sel = $$('select, input', more);
+    const upd = () => { mark.hidden = !sel.some(s => s.value.trim()); };
+    sel.forEach(s => { s.addEventListener('change', upd); s.addEventListener('input', upd); });
     upd();                                       // браузер мог восстановить выбор при возврате на страницу
   }
   $('#upform').addEventListener('submit', e => {

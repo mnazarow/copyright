@@ -27,10 +27,6 @@
           <input type="file" name="files" id="fileinput" accept=".pdf,.zip{% if st.office_convert %},.docx,.doc,.odt,.rtf{% endif %}" multiple hidden>
           <ul class="files" id="filelist"></ul>
         </div>
-        <div class="form-row single">
-          <div><label class="f">Строка в шапку отчета (необязательно)</label>
-            <input type="text" name="note" placeholder="Например: Корректор: И. И. Иванов"></div>
-        </div>
         <div class="form-row">
           <div><label class="f">Автор документа{% if st.upload_author_required %} *{% endif %}</label>
             <input type="text" name="author" list="authors" value="{{ user.name if user and user.role == 'author' else '' }}"
@@ -44,7 +40,7 @@
             {% for d in (st.doc_types or '').splitlines() if d.strip() %}<option>{{ d.strip() }}</option>{% endfor %}</select></div>
         </div>
         <details class="more" id="upmore">
-          <summary>Дополнительно <span class="muted small">— профиль и режим проверки</span>
+          <summary>Дополнительно <span class="muted small">— профиль, режим и строка в шапку отчета</span>
             <span class="badge warn" id="upmore-changed" hidden>изменено</span></summary>
           <div class="form-row two">
             <div><label class="f">Профиль</label>
@@ -53,6 +49,10 @@
             <div><label class="f">Режим</label>
               <select name="mode"><option value="">Как в настройках</option>
               {% for v,t in modes %}<option value="{{ v }}">{{ t }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="form-row single">
+            <div><label class="f">Строка в шапку отчета (необязательно)</label>
+              <input type="text" name="note" placeholder="Например: Корректор: И. И. Иванов"></div>
           </div>
         </details>
         <p style="margin-top:18px"><button class="btn" id="upbtn" type="submit" disabled>Проверить</button>
