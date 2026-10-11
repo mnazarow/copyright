@@ -109,6 +109,12 @@ html.dark .logo-dark { display: block; }
 .files { margin: 14px 0 0; padding: 0; list-style: none; text-align: left; }
 .files li { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 6px 0; font-size: 14px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 16px; margin-top: 18px; }
+.form-row.single { grid-template-columns: 1fr; }
+.form-row.two { grid-template-columns: 1fr 1fr; }
+details.more { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+details.more > summary { font-weight: 500; }
+details.more > .form-row { margin-top: 12px; }
+.badge[hidden] { display: none; }
 label.f { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 input[type=text], input[type=number], input[type=password], select, textarea {
   width: 100%; border: 1px solid var(--input); border-radius: 4px; padding: 9px 11px; font: inherit; background: var(--paper); color: var(--ink); }
@@ -335,7 +341,7 @@ tr.warn-row td { background: var(--warn-bg); }
 
 @media (max-width: 980px) {
   .stats, .g3, .g4, .g5, .kpis { grid-template-columns: 1fr 1fr; }
-  .settings-layout, .docs-layout, .g2, .form-row, .footer .wrap { grid-template-columns: 1fr; }
+  .settings-layout, .docs-layout, .g2, .form-row, .form-row.two, .footer .wrap { grid-template-columns: 1fr; }
   .setting .top { grid-template-columns: 1fr; }
   .side { position: static; }
   .nav { display: none; }
