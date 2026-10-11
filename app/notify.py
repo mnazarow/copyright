@@ -405,4 +405,4 @@ def remind_loop():
 def send_test(st):
     text = "Это проверочное сообщение сервиса «Корректор». Если вы его видите — уведомления настроены."
     return dispatch(st, "test", "Корректор: проверка уведомлений", text, _html(text),
-                    {"event": "test", "version": core.VERSION})
+                    {"event": "test", "version": core.VERSION, "build": core.BUILD})

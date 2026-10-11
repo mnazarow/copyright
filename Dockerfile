@@ -19,6 +19,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY VERSION README.md ./
 COPY app ./app
+# сборка для вывода версии: в дистрибутиве уже есть app/BUILD; при сборке из git передается аргументом
+ARG KORREKTOR_BUILD=""
+RUN if [ -n "$KORREKTOR_BUILD" ]; then echo "$KORREKTOR_BUILD" > app/BUILD; fi
 COPY docs ./docs
 COPY scripts ./scripts
 

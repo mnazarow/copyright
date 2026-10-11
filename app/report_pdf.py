@@ -224,7 +224,7 @@ def build(q, title_extra=""):
             return f"{dt.date.fromisoformat(x):%d.%m.%Y}" if x else "…"
         per = f"{_day(f.get('from'))} — {_day(f.get('to') or dt.date.today().isoformat())}" if f.get("from") or f.get("to") else "весь период"
         d.text(M + 100, M + 32, f"Отчет для руководства за период {per}{title_extra}", 9.5, color=MUTED)
-        d.text(M + 100, M + 45, f"Сформирован {dt.datetime.now():%d.%m.%Y %H:%M} сервисом «Корректор» {core.VERSION}", 8, color=MUTED)
+        d.text(M + 100, M + 45, f"Сформирован {dt.datetime.now():%d.%m.%Y %H:%M} сервисом «Корректор» {core.VERSION_FULL}", 8, color=MUTED)
         d.y = M + 70
 
         # ключевые показатели

@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Корректор{% endblock %} · ВОДОКОМФОРТ</title>
-<link rel="stylesheet" href="/static/css/fonts.css?v={{ version }}">
-<link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+<link rel="stylesheet" href="/static/css/fonts.css?v={{ asset_v }}">
+<link rel="stylesheet" href="/static/css/style.css?v={{ asset_v }}">
 <link rel="icon" href="/static/img/logo-mark.svg">
 <meta name="color-scheme" content="light dark">
 <script>
@@ -21,8 +21,8 @@
 </head>
 <body data-role="{{ user.role if user else '' }}">
 <div class="topbar"><div class="wrap">
-  <span>Внутренний сервис корректорской вычитки · мастер-промпт v5.7</span>
-  <span><button type="button" class="theme-tg" id="theme-tg" title="Светлая / темная тема / как в системе">◐</button> ·{% if user %} {% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} ·{% endif %} версия {{ version }}
+  <span>Внутренний сервис корректорской вычитки · {{ prompt_label() }}</span>
+  <span><button type="button" class="theme-tg" id="theme-tg" title="Светлая / темная тема / как в системе">◐</button> ·{% if user %} {% if ai_on %}ИИ подключен{% else %}ИИ не подключен — работают правила{% endif %} ·{% endif %} <span title="{{ 'Корректор ' ~ version_full }}">версия {{ version }}</span>
   {% if user and page != 'login' %} · <a href="/account" title="Профиль">{{ user.name or user.login }}</a> ({{ ROLES.get(user.role, '') }})
     {% if can('admin') %} · <a href="/admin/users">Пользователи</a> · <a href="/admin/audit">Журнал</a>{% endif %}
     {% if auth_on %} · <a href="/logout">Выйти</a>{% endif %}{% endif %}</span>
@@ -51,11 +51,12 @@
 <footer class="footer"><div class="wrap">
   <div><div class="brand">ВОДОКОМФОРТ · КОРРЕКТОР</div>
   <p>Проверка PDF-документов по мастер-промпту корректора: 8 категорий ошибок, 5 проходов вычитки,
-  отчет DOCX с машинной проверкой оформления по 25 требованиям.</p></div>
+  отчет DOCX с машинной проверкой оформления по 25 требованиям.</p>
+  <p class="small">Версия {{ version }}{% if build %} · {{ build }}{% endif %} · {{ prompt_label() }}</p></div>
   <div><b>Разделы</b><br><a href="/">Проверка</a><br><a href="/jobs">Задания</a><br><a href="/analytics">Аналитика</a><br><a href="/trends">Тренды</a><br><a href="/settings">Настройки</a></div>
   <div><b>Справка</b><br><a href="/docs">Документация</a><br><a href="/docs/methodology">Методология</a><br><a href="/docs/faq">Вопросы и неполадки</a><br><a href="/api/docs">REST API</a></div>
 </div></footer>
-<script src="/static/js/app.js?v={{ version }}"></script>
+<script src="/static/js/app.js?v={{ asset_v }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

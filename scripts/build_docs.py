@@ -60,6 +60,15 @@ def prepare(name, text):
     return text
 
 
+def prompt_version():
+    """Версия встроенного мастер-промпта — по имени последнего файла app/prompts/MASTER-PROMPT_*_vX.Y.md."""
+    d = os.path.join(ROOT, "app", "prompts")
+    files = sorted((f for f in os.listdir(d) if f.endswith(".md") and f != "custom_prompt.md"),
+                   key=lambda f: [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", f)])
+    m = re.search(r"_v(\d+(?:\.\d+)+)\.md$", files[-1]) if files else None
+    return f"v{m.group(1)}" if m else ""
+
+
 def main():
     version = open(os.path.join(ROOT, "VERSION")).read().strip()
     parts = []
@@ -159,7 +168,7 @@ def finish(src, dst, version):
     para_before("Веб-сервис корректорской вычитки PDF-документов", 18, False, None, 18)
     para_before("Полная документация: методология, работа с сервисом, аналитика и тренды, справочник настроек, "
                 "установка, администрирование, REST API, вопросы и неполадки", 12, False, RGBColor(0x6B, 0x72, 0x80), 200)
-    para_before(f"Версия {version} · {dt.date.today():%d.%m.%Y} · мастер-промпт корректора v5.7", 11, False,
+    para_before(f"Версия {version} · {dt.date.today():%d.%m.%Y} · мастер-промпт корректора {prompt_version()}", 11, False,
                 RGBColor(0x6B, 0x72, 0x80), 0)
     p = para_before()
     p.add_run().add_break(WD_BREAK.PAGE)

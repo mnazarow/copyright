@@ -6,3 +6,4 @@ venv
 *.pyc
 docs/*.pdf
 docs/*.docx
+.git

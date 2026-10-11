@@ -99,6 +99,19 @@ pkg_install() {
 }
 pkg_try() { for p in "$@"; do pkg_install "$p" && return 0; done; return 1; }
 # копирование дерева: старые файлы программы удаляются, venv и свой промпт сохраняются
+# сборка — коммит и его дата («a382dd4 2026-10-11»): у одной версии бывает несколько сборок.
+# В дистрибутиве — файл app/BUILD; у папки с исходниками из git — берется из git.
+build_of() {  # build_of ПАПКА
+  if [ -s "$1/app/BUILD" ]; then head -1 "$1/app/BUILD"; return 0; fi
+  command -v git >/dev/null 2>&1 || return 0
+  git -c safe.directory="$1" -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local b; b=$(git -c safe.directory="$1" -C "$1" log -1 --format='%h %cs' 2>/dev/null) || return 0
+  [ -n "$(git -c safe.directory="$1" -C "$1" status --porcelain --untracked-files=no -- . ':!dist' 2>/dev/null)" ] && b="${b%% *}+ ${b#* }"
+  echo "$b"
+}
+ver_full() {  # ver_full ВЕРСИЯ СБОРКА → «1.7.0 (сборка a382dd4 2026-10-11)»
+  echo "$1${2:+ (сборка $2)}"
+}
 copy_tree() {  # copy_tree ИСТОЧНИК НАЗНАЧЕНИЕ
   local src="$1" dst="$2"
   mkdir -p "$dst"
@@ -107,8 +120,8 @@ copy_tree() {  # copy_tree ИСТОЧНИК НАЗНАЧЕНИЕ
     find "$dst/app" -mindepth 1 -maxdepth 1 ! -name prompts -exec rm -rf {} + 2>/dev/null || true
     find "$dst/app/prompts" -mindepth 1 ! -name custom_prompt.md -exec rm -rf {} + 2>/dev/null || true
   fi
-  tar -C "$src" --exclude=./venv --exclude=./data --exclude=./dist --exclude='__pycache__' \
-      --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" --no-same-owner -xf -
+  tar -C "$src" --exclude=./venv --exclude=./data --exclude=./dist --exclude='__pycache__' --exclude=./.git \
+      --exclude='.DS_Store' --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" --no-same-owner -xf -
 }
 
 
@@ -187,7 +200,9 @@ SRC_DIR=$(cd "$SRC_DIR" && pwd)
 [ -f "$SRC_DIR/app/main.py" ] || die "Не найдены файлы программы в $SRC_DIR (ожидается app/main.py)"
 [ "$SRC_DIR" = "$(readlink -f $PREFIX 2>/dev/null || echo $PREFIX)" ] && die "Источник совпадает с $PREFIX: запустите установщик из распакованного архива или дистрибутива"
 VERSION=$(cat "$SRC_DIR/VERSION" 2>/dev/null || echo dev)
-ok "Исходники: $SRC_DIR (версия $VERSION)"
+BUILD_ID=$(build_of "$SRC_DIR")
+VERSION_FULL=$(ver_full "$VERSION" "$BUILD_ID")
+ok "Исходники: $SRC_DIR (версия $VERSION_FULL)"
 
 # ---------------------------------------------------------------- 3. пользователь и папки
 if ! id $APP >/dev/null 2>&1; then
@@ -199,6 +214,7 @@ mkdir -p $PREFIX $DATA $CONF /var/backups/$APP
 chown root:$APP /var/backups/$APP && chmod 2770 /var/backups/$APP   # служба пишет сюда копии по расписанию
 say "Копирование программы в $PREFIX"
 copy_tree "$SRC_DIR" $PREFIX
+if [ -n "$BUILD_ID" ]; then echo "$BUILD_ID" > $PREFIX/app/BUILD; fi  # сборка — для вывода версии
 chown -R root:root $PREFIX
 chown -R $APP:$APP $DATA
 mkdir -p $PREFIX/app/prompts && chown -R $APP:$APP $PREFIX/app/prompts
@@ -357,7 +373,7 @@ case "${1:-help}" in
            py -m app.totp off "$2";;
   update)  need_root "$@"; shift; bash $PREFIX/scripts/update.sh "$@";;
   uninstall) need_root "$@"; shift; bash $PREFIX/scripts/uninstall.sh "$@";;
-  version) cat $PREFIX/VERSION;;
+  version) b=$(head -1 $PREFIX/app/BUILD 2>/dev/null || true); echo "$(cat $PREFIX/VERSION)${b:+ (сборка $b)}";;
   url)     echo "http://$(hostname -I 2>/dev/null | awk '{print $1}'):$(port)/";;
   *) cat <<H
 Команды:
@@ -462,7 +478,7 @@ IP=$(hostname -I 2>/dev/null | awk '{print $1}'); IP=${IP:-127.0.0.1}
 URL="http://$IP:$PORT/"; [ $WITH_NGINX -eq 1 ] && URL="http://${DOMAIN/_/$IP}/"
 echo
 echo -e "${c_ok}════════════════════════════════════════════════════════${c_0}"
-echo -e "${c_ok}  Корректор $VERSION установлен${c_0}"
+echo -e "${c_ok}  Корректор $VERSION_FULL установлен${c_0}"
 echo    "  Адрес:     $URL"
 echo    "  Пароль:    $PASSWORD"
 echo    "  Управление: korrektor help"

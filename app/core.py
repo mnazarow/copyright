@@ -24,7 +24,59 @@ from .settings_schema import DEFAULTS, SCHEMA
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(APP_DIR)
-VERSION = open(os.path.join(ROOT, "VERSION")).read().strip() if os.path.exists(os.path.join(ROOT, "VERSION")) else "dev"
+
+
+def _read_first_line(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return (fh.readline() or "").strip()
+    except OSError:
+        return ""
+
+
+VERSION = _read_first_line(os.path.join(ROOT, "VERSION")) or "dev"
+BUILD_FILE = os.path.join(APP_DIR, "BUILD")      # «коммит дата»: пишут make_bundle.sh, install.sh, update.sh, Docker
+
+
+def _build():
+    """Сборка — коммит и его дата: одна версия (VERSION) у разных сборок отличается. Из файла app/BUILD (есть в
+    дистрибутиве и после установки или обновления), иначе — из git рабочей копии (запуск из исходников)."""
+    b = os.environ.get("KORREKTOR_BUILD") or _read_first_line(BUILD_FILE)
+    if not b and os.path.isdir(os.path.join(ROOT, ".git")):
+        try:
+            git = ["git", "-c", f"safe.directory={ROOT}", "-C", ROOT]
+            r = subprocess.run(git + ["log", "-1", "--format=%h %cs"], capture_output=True, text=True, timeout=5)
+            b = r.stdout.strip() if r.returncode == 0 else ""
+            if b:
+                d = subprocess.run(git + ["status", "--porcelain", "--untracked-files=no", "--", ".", ":!dist"], capture_output=True,
+                                   text=True, timeout=5)
+                if d.returncode == 0 and d.stdout.strip():         # незафиксированные изменения — «+» у коммита
+                    c, _, day = b.partition(" ")
+                    b = f"{c}+ {day}"
+        except (OSError, subprocess.SubprocessError):
+            b = ""
+    return b[:60]
+
+
+BUILD = _build()
+if BUILD:
+    os.environ["KORREKTOR_BUILD"] = BUILD         # процессы заданий наследуют, git не вызывается повторно
+
+
+def build_label(build=None):
+    """«сборка a382dd4 от 11.10.2026» или пустая строка."""
+    build = BUILD if build is None else build
+    if not build:
+        return ""
+    commit, _, day = build.partition(" ")
+    try:
+        day = dt.date.fromisoformat(day.strip()).strftime("%d.%m.%Y")
+    except ValueError:
+        day = day.strip()
+    return f"сборка {commit}" + (f" от {day}" if day else "")
+
+
+VERSION_FULL = VERSION + (f" ({build_label()})" if BUILD else "")
 DATA = os.environ.get("KORREKTOR_DATA", os.path.join(ROOT, "data"))
 JOBS = os.path.join(DATA, "jobs")
 BATCHES = os.path.join(DATA, "batches")
@@ -824,7 +876,7 @@ def _run_job(jid):
         prov = st.get("ai_provider")
         use_ai = st.get("mode") == "rules_ai" or (st.get("mode", "auto") == "auto" and prov not in (None, "", "none"))
         jlog(f"■ Задание № {jid}: «{job.get('filename')}», " + f"{(job.get('size') or 0) / 2 ** 20:.1f}".replace(".", ",")
-             + f" МБ — Корректор {VERSION}, процесс {os.getpid()}")
+             + f" МБ — Корректор {VERSION_FULL}, процесс {os.getpid()}")
         jlog(f"Профиль «{st.get('profile')}», режим «{st.get('mode')}», проходы: {', '.join(st.get('passes') or []) or '—'}; "
              + (f"ИИ: {prov}, модель {st.get('ai_model')}" if use_ai and prov not in (None, "", "none")
                 else "ИИ: не используется"))

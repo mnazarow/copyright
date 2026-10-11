@@ -7,6 +7,9 @@ services:
       args:
         WITH_OCR: "0"        # 1 — распознавание сканов (Tesseract)
         WITH_OFFICE: "1"     # 1 — прием документов Word (LibreOffice)
+        # сборка для вывода версии при сборке из git (в дистрибутиве уже есть app/BUILD):
+        #   KORREKTOR_BUILD="$(git log -1 --format='%h %cs')" docker compose up -d --build
+        KORREKTOR_BUILD: "${KORREKTOR_BUILD:-}"
     image: korrektor:latest
     restart: unless-stopped
     init: true               # «сборщик» дочерних процессов: LibreOffice, завершенный по таймауту, не остается зомби

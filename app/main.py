@@ -42,12 +42,48 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Корректор", version=core.VERSION, docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="Корректор", version=core.VERSION_FULL, docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(core.APP_DIR, "static")), name="static")
 DOCS_DIR = os.path.join(core.ROOT, "docs")
 app.mount("/docs-files", StaticFiles(directory=DOCS_DIR), name="docs-files")
 tpl = Jinja2Templates(directory=os.path.join(core.APP_DIR, "templates"))
-tpl.env.globals.update(version=core.VERSION, TYPES=TYPES, AUTHOR=AUTHOR)
+def _asset_version():
+    """Метка для ссылок на стили и скрипты (?v=…): меняется с любым изменением файлов app/static — после
+    обновления браузер не берет старые файлы из кеша, даже если номер версии не менялся."""
+    import hashlib
+    h = hashlib.sha1(f"{core.VERSION}|{core.BUILD}".encode())
+    for dirpath, dirnames, files in os.walk(os.path.join(core.APP_DIR, "static")):
+        dirnames.sort()
+        for fn in sorted(files):
+            try:
+                s = os.stat(os.path.join(dirpath, fn))
+            except OSError:
+                continue
+            h.update(f"{os.path.relpath(os.path.join(dirpath, fn), core.APP_DIR)}|{s.st_size}|{s.st_mtime_ns}".encode())
+    return h.hexdigest()[:10]
+
+
+_prompt_label = {"key": None, "value": ""}
+
+
+def prompt_label():
+    """«мастер-промпт v5.7» — по первой строке действующего промпта (своего или встроенного)."""
+    try:
+        info = run_prompt_info()
+        key = (info["path"], os.path.getmtime(info["path"]))
+    except (OSError, IndexError):
+        return "мастер-промпт"
+    if _prompt_label["key"] != key:
+        m = re.search(r"\bv\s?(\d+(?:\.\d+)+)", info.get("title") or "", flags=re.I)
+        label = f"мастер-промпт v{m.group(1)}" if m else "мастер-промпт"
+        if info.get("custom"):
+            label += " (свой)"
+        _prompt_label.update(key=key, value=label)
+    return _prompt_label["value"]
+
+
+tpl.env.globals.update(version=core.VERSION, version_full=core.VERSION_FULL, build=core.build_label(),
+                       asset_v=_asset_version(), prompt_label=prompt_label, TYPES=TYPES, AUTHOR=AUTHOR)
 
 DOC_PAGES = [
     ("index", "Обзор и быстрый старт"),
@@ -1036,7 +1072,7 @@ def job_restart(request: Request, jid: int):
 async def health():
     """Без обращения к диску и базе и без пула потоков: проверка состояния (Docker HEALTHCHECK, обновление)
     отвечает, даже когда все потоки пула заняты долгими запросами."""
-    return {"status": "ok", "version": core.VERSION}
+    return {"status": "ok", "version": core.VERSION, "build": core.BUILD}
 
 
 @app.get("/api/jobs")

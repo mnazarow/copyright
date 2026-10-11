@@ -15,6 +15,19 @@ c_ok="\033[1;32m"; c_info="\033[1;34m"; c_err="\033[1;31m"; c_0="\033[0m"
 say() { echo -e "${c_info}==>${c_0} $*"; echo "[$(date +%T)] $*" >>"$LOG"; }
 ok()  { echo -e "${c_ok}✔${c_0} $*"; }
 die() { echo -e "${c_err}✖ $*${c_0}"; exit 1; }
+# сборка — коммит и его дата («a382dd4 2026-10-11»): у одной версии бывает несколько сборок.
+# В дистрибутиве — файл app/BUILD; у папки с исходниками из git — берется из git.
+build_of() {  # build_of ПАПКА
+  if [ -s "$1/app/BUILD" ]; then head -1 "$1/app/BUILD"; return 0; fi
+  command -v git >/dev/null 2>&1 || return 0
+  git -c safe.directory="$1" -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local b; b=$(git -c safe.directory="$1" -C "$1" log -1 --format='%h %cs' 2>/dev/null) || return 0
+  [ -n "$(git -c safe.directory="$1" -C "$1" status --porcelain --untracked-files=no -- . ':!dist' 2>/dev/null)" ] && b="${b%% *}+ ${b#* }"
+  echo "$b"
+}
+ver_full() {  # ver_full ВЕРСИЯ СБОРКА → «1.7.0 (сборка a382dd4 2026-10-11)»
+  echo "$1${2:+ (сборка $2)}"
+}
 # копирование дерева: старые файлы программы удаляются, venv и свой промпт сохраняются
 copy_tree() {  # copy_tree ИСТОЧНИК НАЗНАЧЕНИЕ
   local src="$1" dst="$2"
@@ -24,8 +37,8 @@ copy_tree() {  # copy_tree ИСТОЧНИК НАЗНАЧЕНИЕ
     find "$dst/app" -mindepth 1 -maxdepth 1 ! -name prompts -exec rm -rf {} + 2>/dev/null || true
     find "$dst/app/prompts" -mindepth 1 ! -name custom_prompt.md -exec rm -rf {} + 2>/dev/null || true
   fi
-  tar -C "$src" --exclude=./venv --exclude=./data --exclude=./dist --exclude='__pycache__' \
-      --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" --no-same-owner -xf -
+  tar -C "$src" --exclude=./venv --exclude=./data --exclude=./dist --exclude='__pycache__' --exclude=./.git \
+      --exclude='.DS_Store' --exclude=./app/prompts/custom_prompt.md -cf - . | tar -C "$dst" --no-same-owner -xf -
 }
 
 while [ $# -gt 0 ]; do case "$1" in
@@ -54,7 +67,15 @@ SRC=$(cd "$SRC" && pwd)
 [ -f "$SRC/app/main.py" ] || die "В $SRC нет файлов программы"
 [ "$SRC" = "$PREFIX" ] && die "Источник совпадает с установленной программой ($PREFIX) — укажите папку или архив новой версии"
 OLD=$(cat $PREFIX/VERSION 2>/dev/null || echo ?); NEW=$(cat "$SRC/VERSION" 2>/dev/null || echo ?)
-say "Обновление $OLD → $NEW"
+OLD_B=$(build_of $PREFIX); NEW_B=$(build_of "$SRC")
+OLD_FULL=$(ver_full "$OLD" "$OLD_B"); NEW_FULL=$(ver_full "$NEW" "$NEW_B")
+if [ "$OLD_FULL" = "$NEW_FULL" ] && [ -n "$NEW_B" ]; then
+  say "Установлена та же версия $NEW_FULL — файлы программы будут переустановлены"
+elif [ "$OLD" = "$NEW" ] && [ -z "$NEW_B$OLD_B" ]; then
+  say "Обновление $OLD → $NEW (номер версии не изменился; сборка неизвестна — в источнике нет app/BUILD и git)"
+else
+  say "Обновление $OLD_FULL → $NEW_FULL"
+fi
 
 if [ $BACKUP -eq 1 ]; then
   mkdir -p /var/backups/$APP
@@ -98,6 +119,7 @@ trap 'rollback; die "Обновление отменено (журнал $LOG)"'
 svc stop $APP 2>/dev/null || true
 say "Копирование файлов"
 copy_tree "$SRC" $PREFIX
+if [ -n "$NEW_B" ]; then echo "$NEW_B" > $PREFIX/app/BUILD; fi       # сборка — для вывода версии
 chown -R root:root $PREFIX/app $PREFIX/scripts $PREFIX/docs 2>/dev/null || true
 find $PREFIX -maxdepth 1 -type f -exec chown root:root {} + 2>/dev/null || true
 chown -R $APP:$APP $PREFIX/app/prompts 2>/dev/null || true
@@ -134,4 +156,13 @@ if [ $HAS_SD -eq 1 ] && ! curl -fs "http://$HC:$PORT/api/health" >/dev/null 2>&1
   rollback; die "Обновление отменено. Журнал службы: journalctl -u $APP -n 80"
 fi
 rm -rf "$ROLL" ${TMP:+"$TMP"}
-ok "Корректор обновлен до версии $NEW. Данные, настройки и пароль сохранены."
+# версия, которую сообщает сама запущенная служба, — а не только номер из файла
+RUN_FULL=""
+if [ $HAS_SD -eq 1 ]; then
+  RUN_FULL=$(curl -fs "http://$HC:$PORT/api/health" 2>/dev/null | $PREFIX/venv/bin/python -c \
+    'import json,sys; d=json.load(sys.stdin); b=d.get("build") or ""; print(d.get("version","?") + (" (сборка " + b + ")" if b else ""))' 2>/dev/null || true)
+fi
+if [ -n "$RUN_FULL" ] && [ "$RUN_FULL" != "$NEW_FULL" ]; then
+  echo -e "${c_err}Служба сообщает версию $RUN_FULL, ожидалась $NEW_FULL — проверьте: korrektor status${c_0}"
+fi
+ok "Корректор обновлен: $OLD_FULL → ${RUN_FULL:-$NEW_FULL}. Данные, настройки и пароль сохранены."

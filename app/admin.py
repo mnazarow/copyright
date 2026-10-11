@@ -546,7 +546,7 @@ def metrics(request: Request):
             pass
     size = _data_size()
     lines = [
-        "# HELP korrektor_info Версия сервиса", "# TYPE korrektor_info gauge", f'korrektor_info{{version="{core.VERSION}"}} 1',
+        "# HELP korrektor_info Версия сервиса", "# TYPE korrektor_info gauge", f'korrektor_info{{version="{core.VERSION}",build="{core.BUILD}"}} 1',
         "# HELP korrektor_jobs Задания по состоянию", "# TYPE korrektor_jobs gauge"]
     for s in ("queued", "running", "done", "failed", "uploading"):
         lines.append(f'korrektor_jobs{{status="{s}"}} {by_status.get(s, 0)}')

@@ -30,18 +30,18 @@
 
 ### Шаг 1. Скопируйте установщик на сервер
 
-Установщик — один файл `korrektor-1.6.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
+Установщик — один файл `korrektor-1.7.0-installer.sh` (в нем упакована вся программа). Скопируйте его в домашнюю папку на сервере.
 
 **Windows (PowerShell):**
 
 ```powershell
-scp .\korrektor-1.6.0-installer.sh user@10.0.0.15:~/
+scp .\korrektor-1.7.0-installer.sh user@10.0.0.15:~/
 ```
 
 **macOS / Linux:**
 
 ```bash
-scp korrektor-1.6.0-installer.sh user@10.0.0.15:~/
+scp korrektor-1.7.0-installer.sh user@10.0.0.15:~/
 ```
 
 Здесь `user` — ваше имя на сервере, `10.0.0.15` — адрес сервера. В WinSCP просто перетащите файл в окно сервера.
@@ -55,7 +55,7 @@ ssh user@10.0.0.15
 ### Шаг 3. Запустите установку
 
 ```bash
-sudo bash korrektor-1.6.0-installer.sh
+sudo bash korrektor-1.7.0-installer.sh
 ```
 
 Программа сама определит систему, поставит нужные пакеты, создаст службу и запустит ее. Через 2–5 минут на экране появятся адрес и пароль:
@@ -71,17 +71,17 @@ sudo bash korrektor-1.6.0-installer.sh
 
 ### Установка из распакованной папки
 
-Если у вас архив `korrektor-1.6.0.tar.gz` или папка с исходниками:
+Если у вас архив `korrektor-1.7.0.tar.gz` или папка с исходниками:
 
 ```bash
-tar xzf korrektor-1.6.0.tar.gz
-cd korrektor-1.6.0
+tar xzf korrektor-1.7.0.tar.gz
+cd korrektor-1.7.0
 sudo bash scripts/install.sh
 ```
 
 ## 3. Ключи установки
 
-Ключи пишутся после имени файла, например: `sudo bash korrektor-1.6.0-installer.sh --port 9000 --with-nginx`.
+Ключи пишутся после имени файла, например: `sudo bash korrektor-1.7.0-installer.sh --port 9000 --with-nginx`.
 
 | Ключ | Что делает | Пример |
 |---|---|---|
@@ -101,7 +101,7 @@ sudo bash scripts/install.sh
 **Рекомендуемая установка для офисной сети:**
 
 ```bash
-sudo bash korrektor-1.6.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --with-office --open-firewall
+sudo bash korrektor-1.7.0-installer.sh --with-nginx --domain korrektor.local --with-ocr --with-office --open-firewall
 ```
 
 ## 4. Что и куда устанавливается
@@ -220,7 +220,7 @@ mkdir wheels && pip download -d wheels -r requirements.txt
 
 ```bash
 export PIP_NO_INDEX=1 PIP_FIND_LINKS=$HOME/wheels
-sudo -E bash korrektor-1.6.0-installer.sh
+sudo -E bash korrektor-1.7.0-installer.sh
 ```
 
 ## 9. Обновление
@@ -242,14 +242,16 @@ sudo -E bash korrektor-1.6.0-installer.sh
 
 При обновлении до 1.6 в базу добавляются поля согласования и признака работы задания, таблица истории согласования; ставится библиотека `cryptography` (шифрование копий) — из PyPI или из пакетов дистрибутива при установке без интернета. Согласование, вход по сертификату и шифрование копий выключены, пока их не настроить. Проверка одинаковых изображений и нумерации рисунков включена сразу. Настройка «Тайм-аут запроса» теперь называется «Тайм-аут ожидания ответа» и ограничивает ожидание **начала** ответа модели; прежнее значение сохраняется. Для Ollama после обновления запросы идут по одному, а контекст подбирается автоматически — если вы задавали большой «Тайм-аут запроса» для медленного сервера, он продолжит действовать как тайм-аут ожидания ответа.
 
+При обновлении до 1.7 каждое задание обрабатывается отдельным процессом (сбой разбора PDF или нехватка памяти завершают только задание, а не службу), база переводится в режим WAL, к службе systemd добавляются настройки `OOMPolicy=continue` и `MALLOC_ARENA_MAX=2` (файл `/etc/systemd/system/korrektor.service.d/10-stability.conf`). В интерфейсе, в `korrektor version` и при обновлении рядом с номером версии показывается **сборка** — коммит и его дата, например «1.7.0 (сборка a382dd4 от 11.10.2026)»: так видно, какая именно сборка установлена, даже если номер версии не менялся. Сборку записывает в дистрибутив `scripts/make_bundle.sh`, а при обновлении из папки с git — сам `update.sh`. В конце обновления выводится версия, которую сообщает уже запущенная служба.
+
 ```bash
-sudo bash korrektor-1.6.0-installer.sh --update
+sudo bash korrektor-1.7.0-installer.sh --update
 ```
 
 Или из архива, папки, git:
 
 ```bash
-sudo korrektor update --source korrektor-1.6.0.tar.gz
+sudo korrektor update --source korrektor-1.7.0.tar.gz
 sudo korrektor update --source https://git.local/korrektor.git
 ```
 
@@ -262,7 +264,7 @@ sudo korrektor update --source https://git.local/korrektor.git
 Если на сервере принят Docker, вместо установщика можно собрать образ из распакованного архива:
 
 ```bash
-tar xzf korrektor-1.6.0.tar.gz && cd korrektor-1.6.0
+tar xzf korrektor-1.7.0.tar.gz && cd korrektor-1.7.0
 echo 'KORREKTOR_ADMIN_PASSWORD=Сложный-Пароль-2026' > .env     # без пароля запуск отменяется
 docker compose up -d --build
 # адрес: http://сервер:8080, логин admin
@@ -325,7 +327,7 @@ sudo korrektor restore /var/backups/korrektor/korrektor-auto-20261007-120000.tgz
 
 ```bash
 korrektor status                          # active (running) и {"status":"ok"}
-curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.6.0"}
+curl -s http://127.0.0.1:8080/api/health  # {"status":"ok","version":"1.7.0","build":"a382dd4 2026-10-11"}
 ```
 
 Затем загрузите любой PDF через браузер: через минуту должен появиться отчет с результатом 25/25.

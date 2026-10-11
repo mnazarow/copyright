@@ -114,7 +114,7 @@ sudo -u korrektor /opt/korrektor/venv/bin/python /opt/korrektor/app/pipeline/scr
 
 Подробные метрики для Prometheus — адрес `/metrics` (см. [Уведомления и интеграции, п. 6](integrations.md#10-мониторинг-метрики-prometheus)).
 
-`GET /api/health` отвечает `{"status":"ok","version":"…"}` без авторизации — подходит для Zabbix, Prometheus blackbox, Uptime Kuma.
+`GET /api/health` отвечает `{"status":"ok","version":"…","build":"…"}` (номер версии и сборка — коммит и дата) без авторизации — подходит для Zabbix, Prometheus blackbox, Uptime Kuma.
 
 ```bash
 curl -fs http://korrektor.local/api/health || echo "Корректор недоступен"
